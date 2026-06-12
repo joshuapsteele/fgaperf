@@ -18,6 +18,7 @@ type Config struct {
 	CorpusFile string                `yaml:"corpus_file"`
 	OutputDir  string                `yaml:"output_dir"`
 	Seed       SeedConfig            `yaml:"seed"`
+	Contextual ContextualConfig      `yaml:"contextual"`
 	Probe      ProbeConfig           `yaml:"probe"`
 	Load       LoadConfig            `yaml:"load"`
 	Conditions map[string]CondConfig `yaml:"conditions"`
@@ -42,6 +43,11 @@ type SeedConfig struct {
 	BatchSize     int            `yaml:"batch_size"`     // tuples per Write call (server default max: 100)
 	Writers       int            `yaml:"writers"`        // concurrent Write workers
 	WildcardProb  float64        `yaml:"wildcard_probability"`
+}
+
+type ContextualConfig struct {
+	Relations         []string `yaml:"relations"`          // direct "type#relation" tuples supplied per check instead of seeded
+	AttachProbability *float64 `yaml:"attach_probability"` // probability each sampled check carries its contextual tuples; default 1 when relations are set
 }
 
 type ProbeConfig struct {

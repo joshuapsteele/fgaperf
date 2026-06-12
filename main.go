@@ -158,6 +158,7 @@ func inspect(a *Analysis, cfg *Config) {
 	fmt.Printf("model: %d types, %d relations, %d conditions\n",
 		len(a.Types), len(a.AllRelations), len(a.Model.Conditions))
 	fmt.Printf("inferred subject types: %v\n", a.SubjectTypes)
+	contextual := contextualSet(cfg)
 	fmt.Println("\nrelations (— = unconditioned, CEL = condition reachable):")
 	for _, tr := range a.AllRelations {
 		tag := "—"
@@ -167,6 +168,9 @@ func inspect(a *Analysis, cfg *Config) {
 		direct := ""
 		if len(a.DirectRefs[tr.Type][tr.Relation]) > 0 {
 			direct = " [assignable]"
+		}
+		if contextual[tr.Key()] {
+			direct += " [contextual]"
 		}
 		fmt.Printf("  %-4s %s%s\n", tag, tr.Key(), direct)
 	}
@@ -214,6 +218,7 @@ func probe(client *FGAClient, a *Analysis, cfg *Config, st *State) error {
 	}
 	var allowed int
 	condCount := 0
+	contextualCount := 0
 	for _, e := range corpus.Entries {
 		if e.Expected {
 			allowed++
@@ -221,9 +226,12 @@ func probe(client *FGAClient, a *Analysis, cfg *Config, st *State) error {
 		if e.Conditioned {
 			condCount++
 		}
+		if e.Contextual {
+			contextualCount++
+		}
 	}
-	fmt.Printf("corpus: %d entries (%d allowed / %d denied; %d on CEL-conditioned paths)\n",
-		len(corpus.Entries), allowed, len(corpus.Entries)-allowed, condCount)
+	fmt.Printf("corpus: %d entries (%d allowed / %d denied; %d on CEL-conditioned paths; %d with contextual tuples)\n",
+		len(corpus.Entries), allowed, len(corpus.Entries)-allowed, condCount, contextualCount)
 	return corpus.Save(cfg.CorpusFile)
 }
 

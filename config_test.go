@@ -35,7 +35,7 @@ func TestConfigDefaults(t *testing.T) {
 
 func TestConfigOverridesSurviveDefaults(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	yaml := "model_file: my-model.json\nkeep_store: true\nseed:\n  cohorts: 11\n"
+	yaml := "model_file: my-model.json\nkeep_store: true\nseed:\n  cohorts: 11\ncontextual:\n  relations: [document#active_context]\n  attach_probability: 0.25\n"
 	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -48,6 +48,12 @@ func TestConfigOverridesSurviveDefaults(t *testing.T) {
 	}
 	if cfg.Load.Concurrency == 0 {
 		t.Error("defaults not applied alongside overrides")
+	}
+	if len(cfg.Contextual.Relations) != 1 || cfg.Contextual.Relations[0] != "document#active_context" {
+		t.Errorf("contextual relations lost: %+v", cfg.Contextual.Relations)
+	}
+	if cfg.Contextual.AttachProbability == nil || *cfg.Contextual.AttachProbability != 0.25 {
+		t.Errorf("contextual attach_probability lost: %+v", cfg.Contextual.AttachProbability)
 	}
 }
 

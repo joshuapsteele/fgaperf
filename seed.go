@@ -91,6 +91,7 @@ func (w *World) GenerateTuples() []TupleKey {
 	var tuples []TupleKey
 	seen := map[string]bool{}
 	a := w.analysis
+	contextual := contextualSet(w.cfg)
 	add := func(t TupleKey) {
 		key := t.User + "|" + t.Relation + "|" + t.Object
 		if seen[key] {
@@ -110,6 +111,9 @@ func (w *World) GenerateTuples() []TupleKey {
 		}
 		sort.Strings(relNames)
 		for _, rel := range relNames {
+			if contextual[typ+"#"+rel] {
+				continue
+			}
 			fanout := w.cfg.Seed.DefaultFanout
 			if v, ok := w.cfg.Seed.Fanout[typ+"#"+rel]; ok {
 				fanout = v
@@ -157,6 +161,68 @@ func (w *World) GenerateTuples() []TupleKey {
 		}
 	}
 	return tuples
+}
+
+func contextualSet(cfg *Config) map[string]bool {
+	out := map[string]bool{}
+	for _, rel := range cfg.Contextual.Relations {
+		out[rel] = true
+	}
+	return out
+}
+
+type TupleIndex struct {
+	byObjectAndUserType map[string][]TupleKey
+}
+
+func NewTupleIndex(tuples []TupleKey) *TupleIndex {
+	idx := &TupleIndex{byObjectAndUserType: map[string][]TupleKey{}}
+	for _, t := range tuples {
+		userType := typeOfUser(t.User)
+		if userType == "" {
+			continue
+		}
+		key := t.Object + "|" + userType
+		idx.byObjectAndUserType[key] = append(idx.byObjectAndUserType[key], t)
+	}
+	return idx
+}
+
+func (idx *TupleIndex) RelatedObjects(object, objectType string) []string {
+	if idx == nil {
+		return nil
+	}
+	tuples := idx.byObjectAndUserType[object+"|"+objectType]
+	out := make([]string, 0, len(tuples))
+	seen := map[string]bool{}
+	for _, t := range tuples {
+		user := strings.SplitN(t.User, "#", 2)[0]
+		if !seen[user] {
+			seen[user] = true
+			out = append(out, user)
+		}
+	}
+	return out
+}
+
+func typeOfUser(user string) string {
+	user = strings.SplitN(user, "#", 2)[0]
+	if strings.HasSuffix(user, ":*") {
+		return strings.TrimSuffix(user, ":*")
+	}
+	i := strings.Index(user, ":")
+	if i < 0 {
+		return ""
+	}
+	return user[:i]
+}
+
+func typeOfObject(object string) string {
+	i := strings.Index(object, ":")
+	if i < 0 {
+		return ""
+	}
+	return object[:i]
 }
 
 func instanceIndex(id string) int {

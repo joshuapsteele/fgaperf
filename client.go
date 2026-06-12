@@ -145,16 +145,21 @@ func (c *FGAClient) WriteTuples(storeID, modelID string, tuples []TupleKey) erro
 }
 
 type CheckRequest struct {
-	TupleKey             CheckTupleKey  `json:"tuple_key"`
-	Context              map[string]any `json:"context,omitempty"`
-	AuthorizationModelID string         `json:"authorization_model_id,omitempty"`
-	Consistency          string         `json:"consistency,omitempty"`
+	TupleKey             CheckTupleKey        `json:"tuple_key"`
+	ContextualTuples     *ContextualTupleKeys `json:"contextual_tuples,omitempty"`
+	Context              map[string]any       `json:"context,omitempty"`
+	AuthorizationModelID string               `json:"authorization_model_id,omitempty"`
+	Consistency          string               `json:"consistency,omitempty"`
 }
 
 type CheckTupleKey struct {
 	User     string `json:"user"`
 	Relation string `json:"relation"`
 	Object   string `json:"object"`
+}
+
+type ContextualTupleKeys struct {
+	TupleKeys []TupleKey `json:"tuple_keys"`
 }
 
 func (c *FGAClient) Check(storeID string, req CheckRequest) (bool, error) {
@@ -166,9 +171,10 @@ func (c *FGAClient) Check(storeID string, req CheckRequest) (bool, error) {
 }
 
 type BatchCheckItem struct {
-	TupleKey      CheckTupleKey  `json:"tuple_key"`
-	Context       map[string]any `json:"context,omitempty"`
-	CorrelationID string         `json:"correlation_id"`
+	TupleKey         CheckTupleKey        `json:"tuple_key"`
+	ContextualTuples *ContextualTupleKeys `json:"contextual_tuples,omitempty"`
+	Context          map[string]any       `json:"context,omitempty"`
+	CorrelationID    string               `json:"correlation_id"`
 }
 
 type BatchCheckRequest struct {

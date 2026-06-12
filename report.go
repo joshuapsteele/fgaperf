@@ -32,6 +32,8 @@ type Report struct {
 	Overall       Stats            `json:"overall"`
 	Conditioned   Stats            `json:"conditioned"`
 	Unconditioned Stats            `json:"unconditioned"`
+	Contextual    Stats            `json:"contextual"`
+	NoContextual  Stats            `json:"without_contextual"`
 	ByTarget      map[string]Stats `json:"by_target"`
 	SeedDuration  string           `json:"seed_duration,omitempty"`
 	SeedRate      float64          `json:"seed_tuples_per_sec,omitempty"`
@@ -60,7 +62,7 @@ func BuildReport(res *LoadResult, corpus *Corpus, cfg *Config, tupleCount int, s
 		r.SeedDuration = seedDur.String()
 		r.SeedRate = float64(tupleCount) / seedDur.Seconds()
 	}
-	var cond, uncond []Sample
+	var cond, uncond, contextual, noContextual []Sample
 	byTarget := map[string][]Sample{}
 	items := 0
 	for _, s := range res.Samples {
@@ -70,11 +72,18 @@ func BuildReport(res *LoadResult, corpus *Corpus, cfg *Config, tupleCount int, s
 		} else {
 			uncond = append(uncond, s)
 		}
+		if s.Contextual {
+			contextual = append(contextual, s)
+		} else {
+			noContextual = append(noContextual, s)
+		}
 		byTarget[s.Target] = append(byTarget[s.Target], s)
 	}
 	r.Overall = Summarize(res.Samples)
 	r.Conditioned = Summarize(cond)
 	r.Unconditioned = Summarize(uncond)
+	r.Contextual = Summarize(contextual)
+	r.NoContextual = Summarize(noContextual)
 	for t, ss := range byTarget {
 		r.ByTarget[t] = Summarize(ss)
 	}
@@ -151,11 +160,19 @@ func (r *Report) Markdown() string {
 	row("All checks", r.Overall)
 	row("CEL-conditioned paths", r.Conditioned)
 	row("Unconditioned paths", r.Unconditioned)
+	row("With contextual tuples", r.Contextual)
+	row("Without contextual tuples", r.NoContextual)
 	w("")
 	if r.Conditioned.Count > 0 && r.Unconditioned.Count > 0 {
 		deltaP50 := float64(r.Conditioned.P50-r.Unconditioned.P50) / float64(time.Millisecond)
 		deltaP99 := float64(r.Conditioned.P99-r.Unconditioned.P99) / float64(time.Millisecond)
 		w("Checks whose resolution path can evaluate a CEL condition ran %.2f ms slower at p50 and %.2f ms slower at p99 than checks on unconditioned relations. Note that conditioned and unconditioned populations also differ in graph depth, so this delta is an upper bound on pure CEL evaluation cost; compare relations of similar depth in the per-relation table below for a tighter read.", deltaP50, deltaP99)
+		w("")
+	}
+	if r.Contextual.Count > 0 && r.NoContextual.Count > 0 {
+		deltaP50 := float64(r.Contextual.P50-r.NoContextual.P50) / float64(time.Millisecond)
+		deltaP99 := float64(r.Contextual.P99-r.NoContextual.P99) / float64(time.Millisecond)
+		w("Checks carrying contextual tuples ran %.2f ms slower at p50 and %.2f ms slower at p99 than checks without contextual tuples. This split reflects the configured corpus mix; compare the same target relation with and without contextual assertions for the cleanest read.", deltaP50, deltaP99)
 		w("")
 	}
 	w("## Per-relation breakdown")

@@ -6,7 +6,8 @@ import (
 )
 
 // The example model is the test fixture: it exercises usersets, tuple-to-
-// userset, a recursive relation, an intersection, and a conditioned wildcard.
+// userset, a recursive relation, an intersection, contextual tuples, and a
+// conditioned wildcard.
 func loadExampleModel(t *testing.T) *Analysis {
 	t.Helper()
 	a, err := LoadModel("examples/model.json")
@@ -22,8 +23,8 @@ func TestExampleModelAnalysis(t *testing.T) {
 	if got := len(a.Types); got != 4 {
 		t.Errorf("types: got %d, want 4", got)
 	}
-	if got := len(a.AllRelations); got != 9 {
-		t.Errorf("relations: got %d, want 9", got)
+	if got := len(a.AllRelations); got != 10 {
+		t.Errorf("relations: got %d, want 10", got)
 	}
 	if !reflect.DeepEqual(a.SubjectTypes, []string{"user"}) {
 		t.Errorf("subject types: got %v, want [user]", a.SubjectTypes)
@@ -37,13 +38,14 @@ func TestConditionedFixpoint(t *testing.T) {
 	a := loadExampleModel(t)
 
 	want := map[string]bool{
-		"document#viewer":    true,
-		"document#can_share": true,
-		"document#editor":    false,
-		"document#owner":     false,
-		"folder#viewer":      false,
-		"folder#owner":       false,
-		"group#member":       false,
+		"document#viewer":         true,
+		"document#can_share":      true,
+		"document#editor":         false,
+		"document#owner":          false,
+		"document#active_context": false,
+		"folder#viewer":           false,
+		"folder#owner":            false,
+		"group#member":            false,
 	}
 	for rel, cond := range want {
 		if a.Conditioned[rel] != cond {

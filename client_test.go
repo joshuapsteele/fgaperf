@@ -78,3 +78,34 @@ func TestErrorResponsesAreSurfacedTruncated(t *testing.T) {
 		t.Errorf("error not truncated: %d chars", len(err.Error()))
 	}
 }
+
+func TestCheckRequestSerializesContextualTuples(t *testing.T) {
+	var body map[string]any
+	client, srv := testClient(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		json.NewEncoder(w).Encode(map[string]bool{"allowed": true})
+	})
+	defer srv.Close()
+
+	_, err := client.Check("store1", CheckRequest{
+		TupleKey: CheckTupleKey{User: "user:anne", Relation: "viewer", Object: "document:1"},
+		ContextualTuples: &ContextualTupleKeys{TupleKeys: []TupleKey{{
+			User:     "user:anne",
+			Relation: "active_context",
+			Object:   "document:1",
+		}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, ok := body["contextual_tuples"].(map[string]any)
+	if !ok {
+		t.Fatalf("contextual_tuples missing or wrong type: %#v", body["contextual_tuples"])
+	}
+	tuples, ok := ctx["tuple_keys"].([]any)
+	if !ok || len(tuples) != 1 {
+		t.Fatalf("tuple_keys missing or wrong size: %#v", ctx["tuple_keys"])
+	}
+}

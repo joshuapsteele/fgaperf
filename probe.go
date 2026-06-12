@@ -18,13 +18,15 @@ import (
 )
 
 type CorpusEntry struct {
-	User        string         `json:"user"`
-	Relation    string         `json:"relation"`
-	Object      string         `json:"object"`
-	Context     map[string]any `json:"context,omitempty"`
-	Expected    bool           `json:"expected"`
-	Target      string         `json:"target"`      // "type#relation"
-	Conditioned bool           `json:"conditioned"` // CEL possibly on the resolution path
+	User             string         `json:"user"`
+	Relation         string         `json:"relation"`
+	Object           string         `json:"object"`
+	ContextualTuples []TupleKey     `json:"contextual_tuples,omitempty"`
+	Context          map[string]any `json:"context,omitempty"`
+	Expected         bool           `json:"expected"`
+	Target           string         `json:"target"`      // "type#relation"
+	Conditioned      bool           `json:"conditioned"` // CEL possibly on the resolution path
+	Contextual       bool           `json:"contextual"`  // request carries contextual tuples
 }
 
 type Corpus struct {
@@ -34,6 +36,19 @@ type Corpus struct {
 }
 
 func BuildCorpus(client *FGAClient, a *Analysis, w *World, cfg *Config, storeID, modelID string) (*Corpus, error) {
+	contextual, err := contextualRelations(a, cfg)
+	if err != nil {
+		return nil, err
+	}
+	attachProbability := contextualAttachProbability(cfg)
+	if attachProbability < 0 || attachProbability > 1 {
+		return nil, fmt.Errorf("contextual.attach_probability must be between 0 and 1")
+	}
+	var tupleIndex *TupleIndex
+	if len(contextual) > 0 {
+		tupleIndex = NewTupleIndex(w.GenerateTuples())
+	}
+
 	targets := cfg.Probe.Targets
 	if len(targets) == 0 {
 		for _, tr := range a.AllRelations {
@@ -74,13 +89,16 @@ func BuildCorpus(client *FGAClient, a *Analysis, w *World, cfg *Config, storeID,
 				}
 				subj = pool[rng.Intn(len(pool))]
 			}
+			contextualTuples := w.ContextualTuples(contextual, tupleIndex, subj, obj, rng, attachProbability)
 			candidates = append(candidates, CorpusEntry{
-				User:        subj,
-				Relation:    relation,
-				Object:      obj,
-				Context:     w.RequestContext(rng),
-				Target:      target,
-				Conditioned: a.Conditioned[target],
+				User:             subj,
+				Relation:         relation,
+				Object:           obj,
+				ContextualTuples: contextualTuples,
+				Context:          w.RequestContext(rng),
+				Target:           target,
+				Conditioned:      a.Conditioned[target],
+				Contextual:       len(contextualTuples) > 0,
 			})
 		}
 	}
@@ -101,6 +119,7 @@ func BuildCorpus(client *FGAClient, a *Analysis, w *World, cfg *Config, storeID,
 					Relation: candidates[i].Relation,
 					Object:   candidates[i].Object,
 				},
+				ContextualTuples:     contextualTupleKeys(candidates[i].ContextualTuples),
 				Context:              candidates[i].Context,
 				AuthorizationModelID: modelID,
 				Consistency:          "HIGHER_CONSISTENCY",
@@ -133,6 +152,95 @@ func BuildCorpus(client *FGAClient, a *Analysis, w *World, cfg *Config, storeID,
 	entries := resample(valid, cfg.Probe.AllowedRatio, rng)
 	sort.SliceStable(entries, func(i, j int) bool { return entries[i].Target < entries[j].Target })
 	return &Corpus{StoreID: storeID, ModelID: modelID, Entries: entries}, nil
+}
+
+type contextualRelation struct {
+	ObjectType string
+	Relation   string
+	Refs       []RelationReference
+}
+
+func contextualRelations(a *Analysis, cfg *Config) ([]contextualRelation, error) {
+	out := make([]contextualRelation, 0, len(cfg.Contextual.Relations))
+	for _, key := range cfg.Contextual.Relations {
+		parts := strings.SplitN(key, "#", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("bad contextual relation %q, want type#relation", key)
+		}
+		refs := a.DirectRefs[parts[0]][parts[1]]
+		if len(refs) == 0 {
+			return nil, fmt.Errorf("contextual relation %q does not accept direct tuples", key)
+		}
+		out = append(out, contextualRelation{ObjectType: parts[0], Relation: parts[1], Refs: refs})
+	}
+	return out, nil
+}
+
+func contextualAttachProbability(cfg *Config) float64 {
+	if cfg.Contextual.AttachProbability == nil {
+		return 1
+	}
+	return *cfg.Contextual.AttachProbability
+}
+
+func contextualTupleKeys(tuples []TupleKey) *ContextualTupleKeys {
+	if len(tuples) == 0 {
+		return nil
+	}
+	return &ContextualTupleKeys{TupleKeys: tuples}
+}
+
+func (w *World) ContextualTuples(relations []contextualRelation, idx *TupleIndex, user, object string, rng *rand.Rand, attachProbability float64) []TupleKey {
+	if len(relations) == 0 || rng.Float64() > attachProbability {
+		return nil
+	}
+	subjectType := typeOfUser(user)
+	objectType := typeOfObject(object)
+	cohort, hasCohort := w.Cohort[object]
+	seen := map[string]bool{}
+	var out []TupleKey
+	for _, rel := range relations {
+		ref, ok := rel.matchingRef(subjectType)
+		if !ok {
+			continue
+		}
+		ctxObject := object
+		if rel.ObjectType != objectType {
+			related := idx.RelatedObjects(object, rel.ObjectType)
+			if len(related) > 0 {
+				ctxObject = related[rng.Intn(len(related))]
+			} else if hasCohort {
+				ctxObject = w.pickInCohort(rel.ObjectType, cohort)
+			} else {
+				ctxObject = ""
+			}
+		}
+		if ctxObject == "" {
+			continue
+		}
+		t := TupleKey{
+			User:      user,
+			Relation:  rel.Relation,
+			Object:    ctxObject,
+			Condition: w.tupleCondition(ref.Condition),
+		}
+		key := t.User + "|" + t.Relation + "|" + t.Object
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, t)
+	}
+	return out
+}
+
+func (r contextualRelation) matchingRef(subjectType string) (RelationReference, bool) {
+	for _, ref := range r.Refs {
+		if ref.Type == subjectType && ref.Relation == "" && ref.Wildcard == nil {
+			return ref, true
+		}
+	}
+	return RelationReference{}, false
 }
 
 // resample rebalances the corpus per target toward the requested allowed

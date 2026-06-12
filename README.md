@@ -4,8 +4,8 @@ Model-driven performance testing for OpenFGA. Point it at a compiled
 authorization model (`.json`) and a running OpenFGA instance; it generates a
 coherent tuple graph from the model, discovers which checks resolve to
 allowed or denied, runs a measured load phase, and writes a findings document
-with CEL condition overhead reported separately from unconditioned paths.
-When it's done, it deletes the store it created.
+with CEL condition overhead and contextual-tuple requests reported separately
+from baseline paths. When it's done, it deletes the store it created.
 
 OpenFGA's own benchmarks are in-process Go benchmarks for datastore
 development, and generic load tools (k6, vegeta) have no concept of an
@@ -67,13 +67,13 @@ parameters each CEL condition declares. Instances of every type are
 partitioned into cohorts, which you can read as tenants. Tuples link
 instances within the same cohort, which is what makes deep resolution paths
 and intersection relations (in the example model, `document#can_share`
-requires the same user to be directly shareable and a viewer) actually
-resolve to allowed for some subjects. Purely random tuple graphs almost
-never satisfy intersections. Self-referential relations like `folder#parent`
-only link from higher to lower instance indices, so the generated graph is
-acyclic by construction. Writes go through parallel workers in transactional
-batches of up to 100 (the server's default cap), and the write rate is
-itself reported as a secondary measurement.
+requires the same user to be directly shareable, a viewer, and active in the
+request context) actually resolve to allowed for some subjects. Purely random
+tuple graphs almost never satisfy intersections. Self-referential relations
+like `folder#parent` only link from higher to lower instance indices, so the
+generated graph is acyclic by construction. Writes go through parallel
+workers in transactional batches of up to 100 (the server's default cap), and
+the write rate is itself reported as a secondary measurement.
 
 For conditioned direct types, the tool generates tuple-side condition
 context at write time and request-side context at check time. By default,
@@ -84,6 +84,18 @@ supplies a `required_scope` drawn from the same pool. Pool size and
 keys-per-map control the rate at which the CEL expression evaluates true
 (the example config gives roughly 25%). All of this is overridable per
 condition in config.
+
+Contextual tuple relations are declared under `contextual.relations` as
+`type#relation` keys. Those direct tuples are skipped during setup and instead
+stored per corpus entry, then sent on Check or BatchCheck as
+`contextual_tuples`. For a same-type gate like the example
+`document#active_context`, the contextual tuple uses the checked object. For a
+tenant-context pattern, where the contextual relation lives on a related
+object such as a customer or account, fgaperf first looks for a real seeded
+edge from the checked object to that related object type and uses that object
+ID. `contextual.attach_probability` controls how often sampled checks carry
+the assertion, which lets one corpus include both asserted and missing-context
+paths.
 
 Probe samples candidate (subject, relation, object) triples for each target
 relation, biased toward the object's cohort, and executes each once with
@@ -122,6 +134,16 @@ in a model variant). Second, OpenFGA exposes
 attributes server-side CEL time precisely, where fgaperf measures the
 end-to-end effect a caller sees.
 
+## Contextual tuple isolation
+
+The report also splits checks that carry contextual tuples from checks that do
+not. This matters because contextual tuples are request payload, are evaluated
+in-memory for that request, and participate in OpenFGA's check cache key. A
+benchmark that persists a session- or tenant-context relation during setup can
+therefore overstate production cacheability. Configure those relations under
+`contextual.relations` instead, then use `attach_probability` to include both
+allowed and denied context paths in the same run.
+
 ## Configuration reference
 
 See the comments in `examples/config.yaml`. The knobs that matter most:
@@ -130,6 +152,8 @@ See the comments in `examples/config.yaml`. The knobs that matter most:
 |---|---|
 | `seed.instances`, `seed.fanout` | Graph size and shape; scale these up to test datastore behavior at realistic tuple counts |
 | `seed.cohorts` | Tenant count; subjects and objects correlate within a cohort |
+| `contextual.relations` | Direct relations supplied as per-request contextual tuples instead of persisted seed tuples |
+| `contextual.attach_probability` | Probability a sampled check carries contextual tuples (default 1 when contextual relations are configured) |
 | `probe.targets` | Which relations to measure; omit to probe everything |
 | `probe.allowed_ratio` | Allowed/denied mix in the corpus (-1 keeps the natural mix) |
 | `load.rate` vs closed loop | Latency-at-offered-load vs saturation throughput |

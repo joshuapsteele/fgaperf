@@ -98,3 +98,16 @@ func TestConditionedWildcardTuplesCarryContext(t *testing.T) {
 		t.Fatal("no conditioned wildcard tuples generated; test is vacuous")
 	}
 }
+
+func TestContextualRelationsAreNotSeeded(t *testing.T) {
+	a := loadExampleModel(t)
+	cfg, _ := LoadConfigFile("")
+	cfg.Contextual.Relations = []string{"document#active_context"}
+	w := NewWorld(a, cfg)
+
+	for _, tu := range w.GenerateTuples() {
+		if tu.Relation == "active_context" && strings.HasPrefix(tu.Object, "document:") {
+			t.Fatalf("contextual relation was persisted: %+v", tu)
+		}
+	}
+}

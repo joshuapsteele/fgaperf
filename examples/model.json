@@ -71,10 +71,12 @@
      "intersection": {
       "child": [
        {"this": {}},
-       {"computedUserset": {"relation": "viewer"}}
+       {"computedUserset": {"relation": "viewer"}},
+       {"computedUserset": {"relation": "active_context"}}
       ]
      }
-    }
+    },
+    "active_context": {"this": {}}
    },
    "metadata": {
     "relations": {
@@ -82,7 +84,8 @@
      "owner": {"directly_related_user_types": [{"type": "user"}]},
      "editor": {"directly_related_user_types": [{"type": "user"}, {"type": "group", "relation": "member"}]},
      "viewer": {"directly_related_user_types": [{"type": "user"}, {"type": "user", "wildcard": {}, "condition": "has_scope"}, {"type": "group", "relation": "member"}]},
-     "can_share": {"directly_related_user_types": [{"type": "user"}]}
+     "can_share": {"directly_related_user_types": [{"type": "user"}]},
+     "active_context": {"directly_related_user_types": [{"type": "user"}]}
     }
    }
   }

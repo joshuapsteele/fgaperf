@@ -5,9 +5,9 @@
 # The example model exercises every feature the tool measures: direct tuples,
 # usersets (group#member), tuple-to-userset (parent folders), a recursive
 # relation (folder#parent), an intersection (document#can_share requires the
-# same user to be directly shareable AND a viewer), and a CEL-conditioned
-# wildcard (user:* can view a document when the request carries a matching
-# scope).
+# same user to be directly shareable, a viewer, AND active in request context),
+# a contextual tuple relation, and a CEL-conditioned wildcard (user:* can view
+# a document when the request carries a matching scope).
 
 openfga:
   api_url: http://localhost:8080
@@ -38,6 +38,15 @@ seed:
   batch_size: 100 # max tuples per Write call (server default cap)
   writers: 8
   wildcard_probability: 0.5 # chance each document gets a conditioned `user:*` viewer tuple
+
+# These relations are not written during setup. Probe records them on the
+# corpus entry, and load sends them on each Check/BatchCheck request as
+# `contextual_tuples`. With 50% attachment, document#can_share includes both
+# allowed and denied paths through its contextual intersection gate.
+contextual:
+  relations:
+    - document#active_context
+  attach_probability: 0.5
 
 # Condition context generation. Without this block the tool defaults to:
 # map/list parameters bound on the tuple, scalars supplied at check time,

@@ -70,3 +70,54 @@ func TestResampleSingleOutcomeTargetKept(t *testing.T) {
 		t.Errorf("got %d/%d, want all 40 allowed entries kept", allowed, denied)
 	}
 }
+
+func TestContextualTuplesUseSameObjectWhenTypesMatch(t *testing.T) {
+	a := loadExampleModel(t)
+	cfg, _ := LoadConfigFile("")
+	cfg.Contextual.Relations = []string{"document#active_context"}
+	w := NewWorld(a, cfg)
+	rels, err := contextualRelations(a, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tuples := w.ContextualTuples(rels, nil, "user:anne", "document:doc1", rand.New(rand.NewSource(1)), 1)
+	if len(tuples) != 1 {
+		t.Fatalf("got %d contextual tuples, want 1: %+v", len(tuples), tuples)
+	}
+	if tuples[0].User != "user:anne" || tuples[0].Relation != "active_context" || tuples[0].Object != "document:doc1" {
+		t.Fatalf("unexpected contextual tuple: %+v", tuples[0])
+	}
+}
+
+func TestContextualTuplesPreferSeededRelatedObject(t *testing.T) {
+	cfg, _ := LoadConfigFile("")
+	w := &World{
+		Instances: map[string][]string{
+			"customer": []string{"customer:other", "customer:chosen"},
+		},
+		Cohort: map[string]int{
+			"policy:p1":       0,
+			"customer:chosen": 0,
+			"customer:other":  0,
+		},
+		cfg: cfg,
+		rng: rand.New(rand.NewSource(1)),
+	}
+	idx := NewTupleIndex([]TupleKey{
+		{User: "customer:chosen", Relation: "customer", Object: "policy:p1"},
+	})
+	rels := []contextualRelation{{
+		ObjectType: "customer",
+		Relation:   "principal_in_context",
+		Refs:       []RelationReference{{Type: "user"}},
+	}}
+
+	tuples := w.ContextualTuples(rels, idx, "user:anne", "policy:p1", rand.New(rand.NewSource(1)), 1)
+	if len(tuples) != 1 {
+		t.Fatalf("got %d contextual tuples, want 1: %+v", len(tuples), tuples)
+	}
+	if tuples[0].Object != "customer:chosen" {
+		t.Fatalf("contextual tuple did not use seeded related customer: %+v", tuples[0])
+	}
+}

@@ -18,6 +18,7 @@ import (
 type Sample struct {
 	Target      string
 	Conditioned bool
+	Contextual  bool
 	Latency     time.Duration
 	Err         bool
 	Mismatch    bool
@@ -139,11 +140,12 @@ func doCheck(client *FGAClient, corpus *Corpus, cfg *Config, rng *rand.Rand) Sam
 	t0 := time.Now()
 	allowed, err := client.Check(corpus.StoreID, CheckRequest{
 		TupleKey:             CheckTupleKey{User: e.User, Relation: e.Relation, Object: e.Object},
+		ContextualTuples:     contextualTupleKeys(e.ContextualTuples),
 		Context:              e.Context,
 		AuthorizationModelID: corpus.ModelID,
 		Consistency:          cfg.Load.Consistency,
 	})
-	s := Sample{Target: e.Target, Conditioned: e.Conditioned, Latency: time.Since(t0), Items: 1}
+	s := Sample{Target: e.Target, Conditioned: e.Conditioned, Contextual: e.Contextual, Latency: time.Since(t0), Items: 1}
 	if err != nil {
 		s.Err = true
 	} else if cfg.Load.VerifyResults && allowed != e.Expected {
@@ -156,17 +158,20 @@ func doBatch(client *FGAClient, corpus *Corpus, cfg *Config, rng *rand.Rand) Sam
 	n := cfg.Load.BatchSize
 	items := make([]BatchCheckItem, n)
 	conditioned := false
+	contextual := false
 	expected := make(map[string]bool, n)
 	for i := 0; i < n; i++ {
 		e := corpus.Entries[rng.Intn(len(corpus.Entries))]
 		id := fmt.Sprintf("c%d", i)
 		items[i] = BatchCheckItem{
-			TupleKey:      CheckTupleKey{User: e.User, Relation: e.Relation, Object: e.Object},
-			Context:       e.Context,
-			CorrelationID: id,
+			TupleKey:         CheckTupleKey{User: e.User, Relation: e.Relation, Object: e.Object},
+			ContextualTuples: contextualTupleKeys(e.ContextualTuples),
+			Context:          e.Context,
+			CorrelationID:    id,
 		}
 		expected[id] = e.Expected
 		conditioned = conditioned || e.Conditioned
+		contextual = contextual || e.Contextual
 	}
 	t0 := time.Now()
 	resp, err := client.BatchCheck(corpus.StoreID, BatchCheckRequest{
@@ -174,7 +179,7 @@ func doBatch(client *FGAClient, corpus *Corpus, cfg *Config, rng *rand.Rand) Sam
 		AuthorizationModelID: corpus.ModelID,
 		Consistency:          cfg.Load.Consistency,
 	})
-	s := Sample{Target: "batch", Conditioned: conditioned, Latency: time.Since(t0), Items: n}
+	s := Sample{Target: "batch", Conditioned: conditioned, Contextual: contextual, Latency: time.Since(t0), Items: n}
 	if err != nil {
 		s.Err = true
 		return s
