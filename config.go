@@ -74,6 +74,15 @@ type LoadConfig struct {
 	Endpoint      string        `yaml:"endpoint"`       // check | batch-check
 	BatchSize     int           `yaml:"batch_size"`     // for batch-check
 	VerifyResults bool          `yaml:"verify_results"` // compare allowed against probe expectations
+	Sweep         SweepConfig   `yaml:"sweep"`
+	SLOP99        time.Duration `yaml:"slo_p99"` // optional: a sweep step "passes" only when response-latency p99 is under this
+}
+
+// SweepConfig steps through fixed offered rates in one run, reusing the same
+// corpus and seeded store, to locate the saturation knee.
+type SweepConfig struct {
+	Rates        []int         `yaml:"rates"`         // offered req/s per step; empty = no sweep
+	StepDuration time.Duration `yaml:"step_duration"` // measured duration per step
 }
 
 type MetricsConfig struct {
@@ -207,6 +216,17 @@ func (c *Config) validate() error {
 	if c.Load.Rate < 0 {
 		return fmt.Errorf("load.rate must be >= 0 (0 = closed loop), got %d", c.Load.Rate)
 	}
+	for _, r := range c.Load.Sweep.Rates {
+		if r <= 0 {
+			return fmt.Errorf("load.sweep.rates must all be positive, got %d", r)
+		}
+	}
+	if len(c.Load.Sweep.Rates) > 0 && c.Load.Rate > 0 {
+		return fmt.Errorf("load.rate and load.sweep are mutually exclusive; sweep sets the rate per step")
+	}
+	if c.Load.SLOP99 < 0 {
+		return fmt.Errorf("load.slo_p99 must be >= 0, got %v", c.Load.SLOP99)
+	}
 	return nil
 }
 
@@ -319,6 +339,9 @@ func (c *Config) applyDefaults() {
 	def(&c.Load.Consistency, "MINIMIZE_LATENCY")
 	def(&c.Load.Endpoint, "check")
 	defInt(&c.Load.BatchSize, 20)
+	if len(c.Load.Sweep.Rates) > 0 && c.Load.Sweep.StepDuration == 0 {
+		c.Load.Sweep.StepDuration = 60 * time.Second
+	}
 
 	if c.Pools == nil {
 		c.Pools = map[string]PoolConfig{}

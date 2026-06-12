@@ -236,7 +236,7 @@ against the compose stack: findings doc reported 9.74 datastore queries per
 request, server-side p99 7.57 ms. Parser/diff/quantile unit tests in
 `metrics_test.go`.
 
-### 7. Rate sweep: find the saturation knee automatically
+### 7. Rate sweep: find the saturation knee automatically ✅
 
 **Motivation.** One closed-loop point and one fixed-rate point don't answer
 the question users actually have: "what throughput can this deployment sustain
@@ -257,7 +257,19 @@ within an SLO?" Today that means many manual runs and hand-built curves.
 with a rate/latency table from which the knee is readable, and names the last
 non-saturated step.
 
-### 8. `fgaperf compare`: first-class A/B reporting
+**Done (2026-06-12).** `load.sweep: {rates: [...], step_duration: 60s}` plus
+optional `load.slo_p99` (checked against response-latency p99 — the
+caller-experienced number). `RunSweep` reuses corpus and store; warmup runs
+only before the first step. The findings doc gains a "Rate sweep" table
+(offered/achieved/dropped/p50/p95/p99/response-p99/errors/datastore-queries)
+with the knee marked; the headline sections reflect the knee step (explicitly
+labeled), or the final step when everything saturated. Knee = highest step
+with achieved ≥ 98% of offered and SLO passing. Verified live: rates
+[1000, 3000, 8000] against the compose stack found the knee at 3000 (8000
+achieved only ~4900). Unit tests cover knee selection and the all-saturated
+case.
+
+### 8. `fgaperf compare`: first-class A/B reporting ✅
 
 **Motivation.** The tool's natural use is comparative: consistency modes,
 cache on/off, model variants, OpenFGA versions, instance counts. The JSON
@@ -273,6 +285,16 @@ duration differ.
 
 **Accept.** Two runs differing only in `load.consistency` produce a compare
 doc showing per-relation deltas and naming the one config difference.
+
+**Done (2026-06-12).** New `compare.go`: `fgaperf compare a.json b.json`
+writes `results/compare-<stamp>.md` with side-by-side overall stats (Δ ms and
+%), a server-side delta table (datastore queries per request) when both runs
+have one, per-relation p50/p99 deltas, and a recursive diff of the embedded
+resolved configs. Loud "not directly comparable" caveats when endpoint, corpus
+size, duration, concurrency, or tool version differ. Verified live per the
+accept criterion. Along the way fixed a reproducibility bug this exposed:
+`resample` iterated targets in map order, consuming the RNG differently per
+run; it now iterates sorted (regression test `TestResampleDeterministic`).
 
 ### 9. Embed the resolved config and environment in results JSON ✅
 

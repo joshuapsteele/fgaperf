@@ -43,6 +43,9 @@ type Report struct {
 	ErrorsByClass   map[string]int64 `json:"errors_by_class,omitempty"`
 	ErrorSamples    []string         `json:"error_samples,omitempty"`
 	Server          *ServerMetrics   `json:"server,omitempty"` // diffed Prometheus view of the measured phase
+	Sweep           []SweepStep      `json:"sweep,omitempty"`
+	SweepKneeRate   int              `json:"sweep_knee_rate,omitempty"` // highest non-saturated, SLO-passing step; 0 = none
+	SLOP99          string           `json:"slo_p99,omitempty"`
 	SeedDuration    string           `json:"seed_duration,omitempty"`
 	SeedRate        float64          `json:"seed_tuples_per_sec,omitempty"`
 	Environment     Environment      `json:"environment"`
@@ -58,6 +61,63 @@ type Environment struct {
 }
 
 const toolVersion = "0.1.0"
+
+// SweepStep is one fixed-rate step of a sweep run.
+type SweepStep struct {
+	OfferedRate     int            `json:"offered_rate"`
+	AchievedRate    float64        `json:"achieved_rate_per_sec"`
+	DroppedSlots    int64          `json:"dropped_rate_slots"`
+	Throughput      float64        `json:"throughput_per_sec"`
+	Overall         Stats          `json:"overall"`
+	ResponseLatency Stats          `json:"response_latency"`
+	Mismatches      int64          `json:"result_mismatches"`
+	Server          *ServerMetrics `json:"server,omitempty"`
+	Saturated       bool           `json:"saturated"` // achieved < 98% of offered
+	PassesSLO       bool           `json:"passes_slo"`
+}
+
+// BuildSweepReport assembles a report whose headline sections reflect the
+// knee step — the highest offered rate the server sustained within the SLO —
+// with every step's stats in Sweep. Falls back to the last step when every
+// step saturated.
+func BuildSweepReport(results []*LoadResult, corpus *Corpus, cfg *Config, tupleCount int, seedDur time.Duration) *Report {
+	steps := make([]SweepStep, 0, len(results))
+	kneeIdx := -1
+	for i, res := range results {
+		st := SweepStep{
+			OfferedRate:     res.OfferedRate,
+			DroppedSlots:    res.DroppedSlots,
+			Overall:         Summarize(res.Samples),
+			ResponseLatency: SummarizeResponse(res.Samples),
+			Mismatches:      res.Mismatches,
+			Server:          res.Server,
+		}
+		window := res.MeasuredWindow.Seconds()
+		if window > 0 {
+			st.AchievedRate = float64(len(res.Samples)) / window
+			st.Throughput = float64(st.Overall.Items) / window
+		}
+		st.Saturated = st.AchievedRate < 0.98*float64(st.OfferedRate)
+		st.PassesSLO = cfg.Load.SLOP99 == 0 || st.ResponseLatency.P99 <= cfg.Load.SLOP99
+		if !st.Saturated && st.PassesSLO && (kneeIdx == -1 || st.OfferedRate > steps[kneeIdx].OfferedRate) {
+			kneeIdx = i
+		}
+		steps = append(steps, st)
+	}
+	headline := kneeIdx
+	if headline == -1 {
+		headline = len(results) - 1
+	}
+	r := BuildReport(results[headline], corpus, cfg, tupleCount, seedDur)
+	r.Sweep = steps
+	if kneeIdx >= 0 {
+		r.SweepKneeRate = steps[kneeIdx].OfferedRate
+	}
+	if cfg.Load.SLOP99 > 0 {
+		r.SLOP99 = cfg.Load.SLOP99.String()
+	}
+	return r
+}
 
 func BuildReport(res *LoadResult, corpus *Corpus, cfg *Config, tupleCount int, seedDur time.Duration) *Report {
 	r := &Report{
@@ -190,6 +250,15 @@ func (r *Report) Markdown() string {
 	w("")
 	w("## Headline results")
 	w("")
+	if len(r.Sweep) > 0 {
+		if r.SweepKneeRate > 0 {
+			w("This run swept %d offered rates; this section and the per-relation table reflect the knee step at %d req/s — the highest rate the server sustained%s. The full curve is in the Rate sweep section below.",
+				len(r.Sweep), r.SweepKneeRate, sloClause(r.SLOP99))
+		} else {
+			w("This run swept %d offered rates and **every step saturated**; this section reflects the final step. The full curve is in the Rate sweep section below.", len(r.Sweep))
+		}
+		w("")
+	}
 	w("Sustained throughput was %.0f checks/sec over the %s measured window, with %d errors out of %d measured requests. %s",
 		r.Throughput, r.MeasuredWindow, r.Overall.Errors, r.Overall.Count+r.Overall.Errors, mismatchSentence(r.Mismatches))
 	w("")
@@ -235,6 +304,34 @@ func (r *Report) Markdown() string {
 		deltaP50 := float64(r.Contextual.P50-r.NoContextual.P50) / float64(time.Millisecond)
 		deltaP99 := float64(r.Contextual.P99-r.NoContextual.P99) / float64(time.Millisecond)
 		w("Checks carrying contextual tuples ran %.2f ms slower at p50 and %.2f ms slower at p99 than checks without contextual tuples. This split reflects the configured corpus mix; compare the same target relation with and without contextual assertions for the cleanest read.", deltaP50, deltaP99)
+		w("")
+	}
+	if len(r.Sweep) > 0 {
+		w("## Rate sweep")
+		w("")
+		w("| Offered req/s | Achieved | Dropped slots | p50 | p95 | p99 | Response p99 | Errors | DS queries/req |")
+		w("|---|---|---|---|---|---|---|---|---|")
+		for _, st := range r.Sweep {
+			dsq := "—"
+			if st.Server != nil && st.Server.DatastoreQueryCount.Count > 0 {
+				dsq = fmt.Sprintf("%.1f", st.Server.DatastoreQueryCount.Mean)
+			}
+			mark := ""
+			if st.OfferedRate == r.SweepKneeRate && r.SweepKneeRate > 0 {
+				mark = " ◀ knee"
+			}
+			w("| %d%s | %.0f | %d | %s | %s | %s | %s | %d | %s |",
+				st.OfferedRate, mark, st.AchievedRate, st.DroppedSlots,
+				ms(st.Overall.P50), ms(st.Overall.P95), ms(st.Overall.P99), ms(st.ResponseLatency.P99),
+				st.Overall.Errors, dsq)
+		}
+		w("")
+		if r.SweepKneeRate > 0 {
+			w("The last step where the server kept up with the offered rate (achieved ≥ 98%% of offered%s) was **%d req/s**. Steps beyond the knee show response-latency p99 diverging from service p99 — that gap is queueing delay.",
+				sloClause(r.SLOP99), r.SweepKneeRate)
+		} else {
+			w("**No step kept up with its offered rate%s.** Re-run with lower rates to find the knee.", sloClause(r.SLOP99))
+		}
 		w("")
 	}
 	w("## Per-relation breakdown")
@@ -320,6 +417,13 @@ func (r *Report) Markdown() string {
 	}
 	w("Latencies include client-side HTTP and JSON overhead, which is the number a calling service would actually observe. Results depend heavily on the datastore behind OpenFGA, its cache configuration, and co-location of client and server; record those alongside these numbers. The conditioned/unconditioned split is computed statically from the model (whether any tuple on the resolution path can carry a condition), not from per-request traces. Repeat runs with different random_seed values to confirm stability before drawing conclusions.")
 	return b.String()
+}
+
+func sloClause(slo string) string {
+	if slo == "" {
+		return ""
+	}
+	return fmt.Sprintf(" with response-latency p99 under the %s SLO", slo)
 }
 
 func mismatchSentence(n int64) string {

@@ -236,6 +236,36 @@ func RunLoad(client *FGAClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 	return res, nil
 }
 
+// RunSweep steps through the configured offered rates against the same corpus
+// and store. Warmup runs once, before the first step; later steps inherit a
+// warm server and connection pool.
+func RunSweep(client *FGAClient, corpus *Corpus, cfg *Config, scraper *MetricsScraper) ([]*LoadResult, error) {
+	sw := cfg.Load.Sweep
+	results := make([]*LoadResult, 0, len(sw.Rates))
+	for i, rate := range sw.Rates {
+		stepCfg := *cfg
+		stepCfg.Load.Rate = rate
+		stepCfg.Load.Duration = sw.StepDuration
+		if i > 0 {
+			stepCfg.Load.Warmup = 0
+		}
+		fmt.Printf("sweep step %d/%d: offered %d req/s for %s\n", i+1, len(sw.Rates), rate, sw.StepDuration)
+		res, err := RunLoad(client, corpus, &stepCfg, scraper)
+		if err != nil {
+			return nil, fmt.Errorf("sweep step %d (rate %d): %w", i+1, rate, err)
+		}
+		st := Summarize(res.Samples)
+		achieved := 0.0
+		if res.MeasuredWindow > 0 {
+			achieved = float64(len(res.Samples)) / res.MeasuredWindow.Seconds()
+		}
+		fmt.Printf("  achieved %.0f req/s | p50 %s p99 %s | errors %d | %d slots dropped\n",
+			achieved, ms(st.P50), ms(st.P99), st.Errors, res.DroppedSlots)
+		results = append(results, res)
+	}
+	return results, nil
+}
+
 func doCheck(client *FGAClient, corpus *Corpus, cfg *Config, rng *rand.Rand) Sample {
 	e := corpus.Entries[rng.Intn(len(corpus.Entries))]
 	t0 := time.Now()

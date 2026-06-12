@@ -8,6 +8,7 @@ package main
 //	fgaperf all   -config config.yaml   all of the above, then delete the store
 //	fgaperf inspect -config config.yaml print the model analysis and exit
 //	fgaperf cleanup -config config.yaml delete the store recorded in the state file
+//	fgaperf compare a.json b.json       render two results files side by side
 
 import (
 	"encoding/json"
@@ -30,7 +31,7 @@ type State struct {
 
 func main() {
 	if len(os.Args) < 2 {
-		fail("usage: fgaperf <setup|probe|run|all|inspect|cleanup> [-config config.yaml]")
+		fail("usage: fgaperf <setup|probe|run|all|inspect|cleanup|compare> [-config config.yaml]")
 	}
 	cmd := os.Args[1]
 	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
@@ -78,6 +79,12 @@ func main() {
 		check(runAll(client, analysis, cfg, *keep || cfg.KeepStore))
 	case "cleanup":
 		check(cleanup(client, cfg, *allStores))
+	case "compare":
+		args := fs.Args()
+		if len(args) != 2 {
+			fail("usage: fgaperf compare <results-a.json> <results-b.json>")
+		}
+		check(compare(args[0], args[1], cfg.OutputDir))
 	default:
 		fail("unknown command %q", cmd)
 	}
@@ -257,12 +264,26 @@ func run(client *FGAClient, cfg *Config, st *State) error {
 	if cfg.Metrics.PrometheusURL != "" {
 		scraper = NewMetricsScraper(cfg.Metrics.PrometheusURL)
 	}
-	res, err := RunLoad(client, corpus, cfg, scraper)
-	if err != nil {
-		return err
-	}
 	seedDur, _ := time.ParseDuration(st.SeedDuration)
-	report := BuildReport(res, corpus, cfg, st.TupleCount, seedDur)
+	var report *Report
+	if len(cfg.Load.Sweep.Rates) > 0 {
+		results, err := RunSweep(client, corpus, cfg, scraper)
+		if err != nil {
+			return err
+		}
+		report = BuildSweepReport(results, corpus, cfg, st.TupleCount, seedDur)
+		if report.SweepKneeRate > 0 {
+			fmt.Printf("sweep knee: %d req/s\n", report.SweepKneeRate)
+		} else {
+			fmt.Println("sweep knee: none (every step saturated)")
+		}
+	} else {
+		res, err := RunLoad(client, corpus, cfg, scraper)
+		if err != nil {
+			return err
+		}
+		report = BuildReport(res, corpus, cfg, st.TupleCount, seedDur)
+	}
 	jsonPath, mdPath, err := report.Save(cfg.OutputDir)
 	if err != nil {
 		return err

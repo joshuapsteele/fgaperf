@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"math/rand"
 	"testing"
 )
@@ -89,6 +90,25 @@ func TestResampleCapsDuplication(t *testing.T) {
 	allowed, denied = countAllowed(out)
 	if allowed != 50 || denied != 50 {
 		t.Errorf("got %d/%d, want 50/50 when duplication fits the cap", allowed, denied)
+	}
+}
+
+// resample must be deterministic for a fixed seed: map-order iteration over
+// targets would consume the RNG differently on every run.
+func TestResampleDeterministic(t *testing.T) {
+	entries := append(corpusOf("a#r", 30, 70), corpusOf("b#r", 70, 30)...)
+	for i := range entries {
+		entries[i].Object = fmt.Sprintf("o:%d", i) // make entries distinguishable
+	}
+	out1 := resample(entries, 0.5, 5, rand.New(rand.NewSource(7)))
+	out2 := resample(entries, 0.5, 5, rand.New(rand.NewSource(7)))
+	if len(out1) != len(out2) {
+		t.Fatalf("lengths differ: %d vs %d", len(out1), len(out2))
+	}
+	for i := range out1 {
+		if out1[i].key() != out2[i].key() || out1[i].Expected != out2[i].Expected {
+			t.Fatalf("entry %d differs: %+v vs %+v", i, out1[i], out2[i])
+		}
 	}
 }
 

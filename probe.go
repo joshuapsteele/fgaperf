@@ -298,8 +298,17 @@ func resample(entries []CorpusEntry, ratio, maxDup float64, rng *rand.Rand) []Co
 	for _, e := range entries {
 		byTarget[e.Target] = append(byTarget[e.Target], e)
 	}
+	// Iterate targets in sorted order: map iteration order would consume the
+	// RNG differently on every run, breaking corpus reproducibility for a
+	// fixed random_seed.
+	targets := make([]string, 0, len(byTarget))
+	for t := range byTarget {
+		targets = append(targets, t)
+	}
+	sort.Strings(targets)
 	var out []CorpusEntry
-	for target, group := range byTarget {
+	for _, target := range targets {
+		group := byTarget[target]
 		var allowed, denied []CorpusEntry
 		for _, e := range group {
 			if e.Expected {
