@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go build -o fgaperf .
+      - run: go test ./...
+
+  # End-to-end: run the full pipeline against a real OpenFGA server (in-memory
+  # datastore is fine for functional validation) and verify that the automatic
+  # cleanup deleted the store it created.
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go build -o fgaperf .
+      - name: Start OpenFGA
+        run: |
+          docker run -d --name openfga -p 8080:8080 openfga/openfga:v1.17.1 run
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8080/healthz > /dev/null && exit 0
+            sleep 1
+          done
+          echo "OpenFGA did not become healthy" >&2
+          docker logs openfga >&2
+          exit 1
+      - name: Run full pipeline against the example model
+        run: |
+          sed -e 's/warmup: 10s/warmup: 2s/' -e 's/duration: 60s/duration: 8s/' \
+            examples/config.yaml > ci-config.yaml
+          ./fgaperf all -config ci-config.yaml
+      - name: Verify automatic cleanup left no stores behind
+        run: |
+          count=$(curl -s http://localhost:8080/stores | jq '.stores | length')
+          echo "stores remaining: $count"
+          test "$count" -eq 0
