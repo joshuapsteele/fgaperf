@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sort"
 	"syscall"
 	"time"
 )
@@ -53,6 +54,9 @@ func main() {
 		analysis, err = LoadModel(cfg.ModelFile)
 		if err != nil {
 			fail("%v\nfgaperf needs a compiled OpenFGA authorization model; set model_file in the config (see examples/)", err)
+		}
+		if err := cfg.validateAgainstModel(analysis); err != nil {
+			fail("invalid config: %v", err)
 		}
 	}
 
@@ -230,8 +234,15 @@ func probe(client *FGAClient, a *Analysis, cfg *Config, st *State) error {
 			contextualCount++
 		}
 	}
-	fmt.Printf("corpus: %d entries (%d allowed / %d denied; %d on CEL-conditioned paths; %d with contextual tuples)\n",
-		len(corpus.Entries), allowed, len(corpus.Entries)-allowed, condCount, contextualCount)
+	fmt.Printf("corpus: %d entries (%d distinct checks; %d allowed / %d denied; %d on CEL-conditioned paths; %d with contextual tuples)\n",
+		len(corpus.Entries), corpus.Distinct(), allowed, len(corpus.Entries)-allowed, condCount, contextualCount)
+	for _, target := range sortedKeys(corpus.Stats) {
+		st := corpus.Stats[target]
+		if st.Distinct*2 < st.Total { // more than 2x average duplication is worth a look
+			fmt.Fprintf(os.Stderr, "probe: target %s corpus is %d entries but only %d distinct checks (%.1fx duplication); cache hit rates under load will be inflated\n",
+				target, st.Total, st.Distinct, float64(st.Total)/float64(st.Distinct))
+		}
+	}
 	return corpus.Save(cfg.CorpusFile)
 }
 
@@ -255,8 +266,21 @@ func run(client *FGAClient, cfg *Config, st *State) error {
 	fmt.Printf("throughput: %.0f checks/sec | p50 %sms p95 %sms p99 %sms | errors %d | mismatches %d\n",
 		report.Throughput, ms(report.Overall.P50), ms(report.Overall.P95), ms(report.Overall.P99),
 		report.Overall.Errors, report.Mismatches)
+	if report.OfferedRate > 0 {
+		fmt.Printf("achieved rate: %.0f req/s of %d offered (%d slots dropped) | response-latency p99 %sms\n",
+			report.AchievedRate, report.OfferedRate, report.DroppedSlots, ms(report.ResponseLatency.P99))
+	}
 	fmt.Printf("wrote %s and %s\n", jsonPath, mdPath)
 	return nil
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func loadState(cfg *Config) *State {

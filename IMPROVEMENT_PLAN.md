@@ -48,7 +48,14 @@ end-to-end run (see `.github/workflows/ci.yaml` integration job) against
 These affect whether the numbers can be trusted. Do these before adding
 features.
 
-### 1. Fix coordinated omission in fixed-rate mode
+**Status: all five P0 items done (2026-06-12).** Verified with `go vet`,
+`go test -race`, and end-to-end runs against the compose stack: a closed-loop
+smoke run, plus an oversubscribed fixed-rate run (6000 req/s offered, 4
+workers) that correctly reported achieved 3768 req/s, 16.9k dropped slots, and
+response-latency p99 of 1622 ms vs service p99 of 2.96 ms. Per-item notes
+below.
+
+### 1. Fix coordinated omission in fixed-rate mode ✅
 
 **Problem.** In `load.go`, the rate ticker drops slots when the channel is
 full ("drop the slot rather than build backlog"), and latency is measured from
@@ -72,7 +79,16 @@ tell it happened.
 achieved rate < offered rate and shows response-latency percentiles much worse
 than service-latency percentiles, instead of silently looking healthy.
 
-### 2. Report corpus duplication, and bound it
+**Done.** The rate dispatcher now sends *intended* times (slot N fires at
+`start + N*interval`) through `rateCh`; workers record
+`RespLatency = completion - intended`. The buffer holds one second of slots and
+drops (counted in `DroppedSlots`) only when workers fall a full second behind.
+Report gains `achieved_rate_per_sec`, `dropped_rate_slots`, a
+`response_latency` stats block, and a loud markdown callout when achieved <
+98% of offered. Closed-loop mode unchanged. Verified per the accept criterion
+(see status note above).
+
+### 2. Report corpus duplication, and bound it ✅
 
 **Problem.** `probe.go` `resample`/`sampleN` draw with replacement to hit
 `allowed_ratio`. When natural allowed (or denied) outcomes are scarce, the
@@ -94,7 +110,16 @@ Nothing in the output reveals this.
 **Accept.** A run with a very low natural allowed rate prints a duplication
 warning, and the findings doc states distinct-vs-total corpus entries.
 
-### 3. Compute throughput over the measured wall-clock window
+**Done.** `probe.max_duplication` (default 5, -1 = unbounded) makes `resample`
+keep the natural mix with a warning when hitting `allowed_ratio` would exceed
+the cap (`TestResampleCapsDuplication`). `Corpus` carries per-target
+`target_stats` (total/distinct) in `corpus.json`; probe prints overall distinct
+count and warns per target above 2x duplication; the findings doc states
+distinct-vs-total in the config table and a caveats paragraph. Observed live:
+the example model's `document#can_share` (natural 2 allowed / 198 denied) now
+keeps its natural mix instead of 50 copies of 2 checks.
+
+### 3. Compute throughput over the measured wall-clock window ✅
 
 **Problem.** `report.go` divides items by the *configured* duration. Workers
 checking `time.Now().Before(deadline)` before each request means in-flight
@@ -109,7 +134,13 @@ config table.
 **Accept.** Throughput for a run with multi-second p99s no longer exceeds what
 the wall clock supports.
 
-### 4. Error visibility
+**Done.** Every `Sample` records its completion timestamp; the collector tracks
+first/last measured completion into `LoadResult.MeasuredWindow`, and the report
+divides items by that window (falling back to configured duration only when no
+samples exist). The findings doc shows the actual window next to the configured
+duration; `measured_window` is in the results JSON.
+
+### 4. Error visibility ✅
 
 **Problem.** Errors are a single counter. A run with 5% timeouts and a run
 with 5% HTTP 429s look identical, and the error rate isn't broken down per
@@ -127,7 +158,14 @@ already does for its errors.
 **Accept.** A run against a server that starts returning 429s mid-run produces
 a findings doc that says so.
 
-### 5. Validate config strictly
+**Done.** `client.go` returns a typed `*HTTPError` carrying the status code;
+`classifyErr` in `load.go` buckets errors into timeout / connection / 4xx /
+5xx / decode (unit-tested in `load_test.go`). Samples carry class + verbatim
+message; the report gets `errors_by_class`, the first 5 verbatim
+`error_samples` (so a 429 burst is named explicitly in the findings doc), an
+"Errors" markdown section, and an Errors column in the per-relation table.
+
+### 5. Validate config strictly ✅
 
 **Problem.** `yaml.Unmarshal` ignores unknown keys, so a typo like
 `alowed_ratio:` silently runs with defaults. For a measurement tool,
@@ -147,6 +185,14 @@ misspelled fanout key silently uses the default).
 
 **Accept.** A config with an unknown key or a fanout key naming a nonexistent
 relation fails fast with a message naming the bad key.
+
+**Done.** `LoadConfigFile` decodes with `KnownFields(true)` and then runs
+`Config.validate()` (consistency/endpoint enums, probabilities in [0,1],
+`type#relation` key shapes, pools referenced by conditions exist, positive
+counts). `Config.validateAgainstModel()` runs in `main.go` for
+inspect/setup/probe/all and checks that fanout, instances, contextual,
+probe-target, subject-type, and condition keys all exist in the model. Both the
+example and the private config pass; bad configs covered in `config_test.go`.
 
 ---
 

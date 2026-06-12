@@ -31,7 +31,7 @@ func TestResampleBalancesEachTarget(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
 	entries := append(corpusOf("a#r", 80, 20), corpusOf("b#r", 10, 90)...)
 
-	out := resample(entries, 0.5, rng)
+	out := resample(entries, 0.5, -1, rng)
 	if len(out) != len(entries) {
 		t.Fatalf("resample changed corpus size: got %d, want %d", len(out), len(entries))
 	}
@@ -51,7 +51,7 @@ func TestResampleNegativeRatioKeepsNaturalMix(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
 	entries := corpusOf("a#r", 80, 20)
 
-	out := resample(entries, -1, rng)
+	out := resample(entries, -1, 5, rng)
 	allowed, denied := countAllowed(out)
 	if allowed != 80 || denied != 20 {
 		t.Errorf("got %d/%d, want the natural 80/20 mix", allowed, denied)
@@ -64,10 +64,50 @@ func TestResampleSingleOutcomeTargetKept(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
 	entries := corpusOf("a#r", 40, 0)
 
-	out := resample(entries, 0.5, rng)
+	out := resample(entries, 0.5, 5, rng)
 	allowed, denied := countAllowed(out)
 	if allowed != 40 || denied != 0 {
 		t.Errorf("got %d/%d, want all 40 allowed entries kept", allowed, denied)
+	}
+}
+
+// When hitting allowed_ratio would replicate the scarce class beyond
+// max_duplication, the target must keep its natural mix instead of producing
+// a corpus of a few checks repeated dozens of times.
+func TestResampleCapsDuplication(t *testing.T) {
+	rng := rand.New(rand.NewSource(1))
+	entries := corpusOf("a#r", 5, 95) // ratio 0.5 would need 50 allowed from 5 distinct = 10x
+
+	out := resample(entries, 0.5, 5, rng)
+	allowed, denied := countAllowed(out)
+	if allowed != 5 || denied != 95 {
+		t.Errorf("got %d/%d, want the natural 5/95 mix preserved under the duplication cap", allowed, denied)
+	}
+
+	// Within the cap, rebalancing still happens.
+	out = resample(entries, 0.5, 10, rng)
+	allowed, denied = countAllowed(out)
+	if allowed != 50 || denied != 50 {
+		t.Errorf("got %d/%d, want 50/50 when duplication fits the cap", allowed, denied)
+	}
+}
+
+func TestCorpusDuplicationStats(t *testing.T) {
+	c := &Corpus{Entries: []CorpusEntry{
+		{Target: "a#r", User: "user:1", Relation: "r", Object: "a:1"},
+		{Target: "a#r", User: "user:1", Relation: "r", Object: "a:1"}, // duplicate
+		{Target: "a#r", User: "user:2", Relation: "r", Object: "a:1"},
+		{Target: "b#r", User: "user:1", Relation: "r", Object: "b:1"},
+	}}
+	if got := c.Distinct(); got != 3 {
+		t.Errorf("Distinct() = %d, want 3", got)
+	}
+	stats := c.TargetStats()
+	if st := stats["a#r"]; st.Total != 3 || st.Distinct != 2 {
+		t.Errorf("a#r stats = %+v, want total 3 distinct 2", st)
+	}
+	if st := stats["b#r"]; st.Total != 1 || st.Distinct != 1 {
+		t.Errorf("b#r stats = %+v, want total 1 distinct 1", st)
 	}
 }
 

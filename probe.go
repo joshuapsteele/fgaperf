@@ -30,9 +30,47 @@ type CorpusEntry struct {
 }
 
 type Corpus struct {
-	StoreID string        `json:"store_id"`
-	ModelID string        `json:"model_id"`
-	Entries []CorpusEntry `json:"entries"`
+	StoreID string                       `json:"store_id"`
+	ModelID string                       `json:"model_id"`
+	Stats   map[string]CorpusTargetStats `json:"target_stats,omitempty"`
+	Entries []CorpusEntry                `json:"entries"`
+}
+
+// CorpusTargetStats records how much resampling duplicated a target's entries.
+// A low distinct count means the load phase replays few unique checks, which
+// inflates server cache hit rates relative to real traffic.
+type CorpusTargetStats struct {
+	Total    int `json:"total"`
+	Distinct int `json:"distinct"`
+}
+
+func (e CorpusEntry) key() string { return e.User + "|" + e.Relation + "|" + e.Object }
+
+// TargetStats computes total and distinct (user, relation, object) entries per
+// target. Derived from the entries so it is always consistent with them.
+func (c *Corpus) TargetStats() map[string]CorpusTargetStats {
+	seen := map[string]map[string]bool{}
+	out := map[string]CorpusTargetStats{}
+	for _, e := range c.Entries {
+		if seen[e.Target] == nil {
+			seen[e.Target] = map[string]bool{}
+		}
+		seen[e.Target][e.key()] = true
+		st := out[e.Target]
+		st.Total++
+		st.Distinct = len(seen[e.Target])
+		out[e.Target] = st
+	}
+	return out
+}
+
+// Distinct counts unique (user, relation, object) triples across the corpus.
+func (c *Corpus) Distinct() int {
+	seen := map[string]bool{}
+	for _, e := range c.Entries {
+		seen[e.key()] = true
+	}
+	return len(seen)
 }
 
 func BuildCorpus(client *FGAClient, a *Analysis, w *World, cfg *Config, storeID, modelID string) (*Corpus, error) {
@@ -149,9 +187,11 @@ func BuildCorpus(client *FGAClient, a *Analysis, w *World, cfg *Config, storeID,
 		fmt.Fprintf(os.Stderr, "probe: %d/%d candidates errored and were dropped\n", errCount, len(candidates))
 	}
 
-	entries := resample(valid, cfg.Probe.AllowedRatio, rng)
+	entries := resample(valid, cfg.Probe.AllowedRatio, cfg.Probe.MaxDuplication, rng)
 	sort.SliceStable(entries, func(i, j int) bool { return entries[i].Target < entries[j].Target })
-	return &Corpus{StoreID: storeID, ModelID: modelID, Entries: entries}, nil
+	c := &Corpus{StoreID: storeID, ModelID: modelID, Entries: entries}
+	c.Stats = c.TargetStats()
+	return c, nil
 }
 
 type contextualRelation struct {
@@ -245,8 +285,12 @@ func (r contextualRelation) matchingRef(subjectType string) (RelationReference, 
 
 // resample rebalances the corpus per target toward the requested allowed
 // ratio, duplicating entries from the scarcer class when needed. A negative
-// ratio keeps the natural mix.
-func resample(entries []CorpusEntry, ratio float64, rng *rand.Rand) []CorpusEntry {
+// ratio keeps the natural mix. maxDup bounds how far the scarcer class may be
+// duplicated: when hitting the ratio would replicate entries more than maxDup
+// times on average, the target keeps its natural mix instead (replaying a
+// handful of checks thousands of times measures the server's cache, not the
+// model). A non-positive maxDup means unbounded.
+func resample(entries []CorpusEntry, ratio, maxDup float64, rng *rand.Rand) []CorpusEntry {
 	if ratio < 0 {
 		return entries
 	}
@@ -273,6 +317,12 @@ func resample(entries []CorpusEntry, ratio float64, rng *rand.Rand) []CorpusEntr
 		n := len(group)
 		wantAllowed := int(float64(n) * ratio)
 		wantDenied := n - wantAllowed
+		if maxDup > 0 && (float64(wantAllowed) > maxDup*float64(len(allowed)) || float64(wantDenied) > maxDup*float64(len(denied))) {
+			fmt.Fprintf(os.Stderr, "probe: target %s would need >%.0fx duplication to reach allowed_ratio %.2f (natural mix: allowed=%d denied=%d); keeping natural mix\n",
+				target, maxDup, ratio, len(allowed), len(denied))
+			out = append(out, group...)
+			continue
+		}
 		out = append(out, sampleN(allowed, wantAllowed, rng)...)
 		out = append(out, sampleN(denied, wantDenied, rng)...)
 	}

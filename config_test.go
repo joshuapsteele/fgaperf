@@ -57,6 +57,77 @@ func TestConfigOverridesSurviveDefaults(t *testing.T) {
 	}
 }
 
+// Misconfiguration that silently runs with defaults is data corruption for a
+// measurement tool: every bad config must fail fast, naming the bad key.
+func TestConfigRejectsUnknownKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	yaml := "probe:\n  alowed_ratio: 0.5\n" // typo'd allowed_ratio
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfigFile(path); err == nil {
+		t.Fatal("config with unknown key alowed_ratio loaded without error")
+	}
+}
+
+func TestConfigValidation(t *testing.T) {
+	cases := map[string]string{
+		"bad consistency":    "load:\n  consistency: EVENTUAL\n",
+		"bad endpoint":       "load:\n  endpoint: expand\n",
+		"bad probability":    "seed:\n  wildcard_probability: 1.5\n",
+		"bad allowed_ratio":  "probe:\n  allowed_ratio: 2\n",
+		"bad fanout key":     "seed:\n  fanout:\n    notarelation: 3\n",
+		"bad target key":     "probe:\n  targets: [document]\n",
+		"bad contextual key": "contextual:\n  relations: [viewer]\n",
+		"missing pool":       "conditions:\n  has_scope:\n    params:\n      scopes: {pool: nope}\n",
+		"negative rate":      "load:\n  rate: -5\n",
+		"zero concurrency":   "load:\n  concurrency: -1\n",
+	}
+	for name, yaml := range cases {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadConfigFile(path); err == nil {
+			t.Errorf("%s: config loaded without error:\n%s", name, yaml)
+		}
+	}
+}
+
+func TestValidateAgainstModel(t *testing.T) {
+	a := loadExampleModel(t)
+
+	good, err := LoadConfigFile("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	good.Seed.Fanout = map[string]int{"document#viewer": 3}
+	good.Seed.Instances = map[string]int{"document": 10}
+	good.Probe.Targets = []string{"document#can_share"}
+	good.Probe.SubjectTypes = []string{"user"}
+	good.Contextual.Relations = []string{"document#active_context"}
+	good.Conditions = map[string]CondConfig{"has_scope": {}}
+	if err := good.validateAgainstModel(a); err != nil {
+		t.Errorf("valid config rejected: %v", err)
+	}
+
+	bad := []func(c *Config){
+		func(c *Config) { c.Seed.Fanout = map[string]int{"document#vewer": 3} },
+		func(c *Config) { c.Seed.Instances = map[string]int{"documnet": 10} },
+		func(c *Config) { c.Probe.Targets = []string{"document#nope"} },
+		func(c *Config) { c.Probe.SubjectTypes = []string{"robot"} },
+		func(c *Config) { c.Contextual.Relations = []string{"folder#active_context"} },
+		func(c *Config) { c.Conditions = map[string]CondConfig{"no_such_condition": {}} },
+	}
+	for i, mutate := range bad {
+		cfg, _ := LoadConfigFile("")
+		mutate(cfg)
+		if err := cfg.validateAgainstModel(a); err == nil {
+			t.Errorf("bad config %d passed model validation", i)
+		}
+	}
+}
+
 func TestPoolMaterialize(t *testing.T) {
 	explicit := PoolConfig{Values: []string{"a", "b"}}
 	if got := explicit.Materialize(); len(got) != 2 || got[0] != "a" {

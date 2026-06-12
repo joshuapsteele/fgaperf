@@ -34,6 +34,19 @@ func NewFGAClient(cfg OpenFGAConfig, maxConns int) *FGAClient {
 	}
 }
 
+// HTTPError is a non-2xx response. Load-phase error classification needs the
+// status code, not just a formatted string.
+type HTTPError struct {
+	StatusCode int
+	Method     string
+	Path       string
+	Body       string
+}
+
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("%s %s: HTTP %d: %s", e.Method, e.Path, e.StatusCode, e.Body)
+}
+
 func (c *FGAClient) do(method, path string, body any, out any) error {
 	var rdr io.Reader
 	if body != nil {
@@ -61,7 +74,7 @@ func (c *FGAClient) do(method, path string, body any, out any) error {
 		return err
 	}
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("%s %s: HTTP %d: %s", method, path, resp.StatusCode, truncate(string(data), 300))
+		return &HTTPError{StatusCode: resp.StatusCode, Method: method, Path: path, Body: truncate(string(data), 300)}
 	}
 	if out != nil {
 		return json.Unmarshal(data, out)

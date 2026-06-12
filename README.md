@@ -120,11 +120,16 @@ The most important knobs are:
 | `contextual.attach_probability` | Probability a sampled check carries contextual tuples. Use `1.0` when every production request carries context, or less than `1.0` to include denied missing-context paths. |
 | `probe.targets` | Relations to measure. Omit to probe all relations. |
 | `probe.allowed_ratio` | Desired allowed/denied mix in the corpus. Use `-1` to keep the natural mix. |
+| `probe.max_duplication` | Caps how far probe may duplicate scarce outcomes to hit `allowed_ratio` (default `5`, `-1` = unbounded). Targets that would exceed it keep their natural mix, with a warning. |
 | `load.endpoint` | `check` or `batch-check`. |
 | `load.rate` | Fixed offered requests/sec. `0` means closed-loop saturation testing. |
 | `load.consistency` | `MINIMIZE_LATENCY` or `HIGHER_CONSISTENCY`. |
 | `conditions`, `pools` | Tuple-side and request-side CEL condition context generation. |
 | `random_seed` | Makes generated data and probes repeatable. |
+
+Configs are validated strictly: unknown keys, out-of-range values, and names
+that do not exist in the loaded model all fail fast with an error naming the
+bad key, rather than silently running with defaults.
 
 ## How It Works
 
@@ -147,14 +152,19 @@ The generated findings document includes:
 
 | Section | Use |
 |---|---|
-| Headline results | Overall throughput and latency. |
+| Headline results | Overall throughput and latency, computed over the actual measured window. |
 | CEL-conditioned paths | Checks whose resolution can evaluate a CEL condition. |
 | Contextual tuples | Checks sent with request-local contextual tuples. |
-| Per-relation breakdown | The most useful place to compare similar paths. |
+| Per-relation breakdown | The most useful place to compare similar paths, including per-relation error counts. |
+| Errors | Error counts by class (timeout, connection, 4xx, 5xx, decode) with the first few verbatim messages. |
 | Write path | Tuple seeding throughput. |
 
 Closed-loop runs are useful for finding saturation. Fixed-rate runs are better
-for estimating latency at a realistic offered load.
+for estimating latency at a realistic offered load. Fixed-rate findings also
+report the *achieved* rate against the offered rate and a separate
+response-latency row measured from each request's scheduled send time; when the
+server cannot keep up, that row — not service latency — is what callers would
+experience.
 
 ## Docker Notes
 

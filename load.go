@@ -7,8 +7,11 @@ package main
 // Warmup samples are discarded.
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
+	"net"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -19,24 +22,56 @@ type Sample struct {
 	Target      string
 	Conditioned bool
 	Contextual  bool
-	Latency     time.Duration
+	Latency     time.Duration // service latency: request start -> response
+	RespLatency time.Duration // fixed-rate only: intended send time -> response (includes queueing delay)
+	Completed   time.Time
 	Err         bool
+	ErrClass    string // timeout | connection | 4xx | 5xx | decode
+	ErrMsg      string
 	Mismatch    bool
 	Items       int // 1 for check; batch size for batch-check
 }
 
 type LoadResult struct {
-	Endpoint    string
-	Consistency string
-	Concurrency int
-	OfferedRate int
-	Warmup      time.Duration
-	Duration    time.Duration
-	WallClock   time.Duration
-	Samples     []Sample
-	TotalErrors int64
-	TotalChecks int64
-	Mismatches  int64
+	Endpoint       string
+	Consistency    string
+	Concurrency    int
+	OfferedRate    int
+	Warmup         time.Duration
+	Duration       time.Duration
+	WallClock      time.Duration
+	MeasuredWindow time.Duration // first to last measured-sample completion
+	DroppedSlots   int64         // fixed-rate slots dropped because workers fell a full buffer behind
+	Samples        []Sample
+	TotalErrors    int64
+	TotalChecks    int64
+	Mismatches     int64
+	ErrorsByClass  map[string]int64
+	ErrorSamples   []string // first few verbatim error strings from the measured phase
+}
+
+const maxErrorSamples = 5
+
+// classifyErr buckets a request error for reporting. The classes are coarse on
+// purpose; ErrorSamples carries the verbatim strings for diagnosis.
+func classifyErr(err error) string {
+	var he *HTTPError
+	if errors.As(err, &he) {
+		if he.StatusCode >= 500 {
+			return "5xx"
+		}
+		return "4xx"
+	}
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		return "timeout"
+	}
+	var se *json.SyntaxError
+	var ute *json.UnmarshalTypeError
+	if errors.As(err, &se) || errors.As(err, &ute) {
+		return "decode"
+	}
+	return "connection"
 }
 
 func RunLoad(client *FGAClient, corpus *Corpus, cfg *Config) (*LoadResult, error) {
@@ -53,43 +88,61 @@ func RunLoad(client *FGAClient, corpus *Corpus, cfg *Config) (*LoadResult, error
 		Duration:    lc.Duration,
 	}
 
-	var rateCh chan struct{}
+	start := time.Now()
+	warmupEnd := start.Add(lc.Warmup)
+	deadline := start.Add(lc.Warmup + lc.Duration)
+
+	// Fixed-rate mode dispatches *intended* send times computed from the slot
+	// schedule (slot N fires at start + N*interval), never from when a worker
+	// happened to be free. Workers measure response latency against that
+	// intended time, so queueing delay under saturation shows up in the numbers
+	// instead of being coordinated away. The buffer holds one second of slots;
+	// only when workers fall a full second behind do we drop (and count) slots.
+	var rateCh chan time.Time
 	stopRate := make(chan struct{})
+	var droppedSlots int64
 	if lc.Rate > 0 {
-		rateCh = make(chan struct{}, lc.Rate)
+		rateCh = make(chan time.Time, lc.Rate)
 		interval := time.Second / time.Duration(lc.Rate)
 		go func() {
-			t := time.NewTicker(interval)
-			defer t.Stop()
-			for {
-				select {
-				case <-t.C:
-					select {
-					case rateCh <- struct{}{}:
-					default: // queue full; drop the slot rather than build backlog
+			var timer *time.Timer
+			for n := int64(0); ; n++ {
+				intended := start.Add(time.Duration(n) * interval)
+				if d := time.Until(intended); d > 0 {
+					if timer == nil {
+						timer = time.NewTimer(d)
+					} else {
+						timer.Reset(d)
 					}
+					select {
+					case <-timer.C:
+					case <-stopRate:
+						return
+					}
+				}
+				select {
 				case <-stopRate:
 					return
+				case rateCh <- intended:
+				default:
+					atomic.AddInt64(&droppedSlots, 1)
 				}
 			}
 		}()
 	}
 
-	start := time.Now()
-	warmupEnd := start.Add(lc.Warmup)
-	deadline := start.Add(lc.Warmup + lc.Duration)
-
 	var wg sync.WaitGroup
 	sampleCh := make(chan Sample, 4096)
-	var errors, checks, mismatches int64
+	var errCount, checks, mismatches int64
 
 	worker := func(id int) {
 		defer wg.Done()
 		rng := rand.New(rand.NewSource(cfg.RandomSeed + int64(id)*7919))
 		for time.Now().Before(deadline) {
+			var intended time.Time
 			if rateCh != nil {
 				select {
-				case <-rateCh:
+				case intended = <-rateCh:
 				case <-time.After(50 * time.Millisecond):
 					continue
 				}
@@ -100,14 +153,17 @@ func RunLoad(client *FGAClient, corpus *Corpus, cfg *Config) (*LoadResult, error
 			} else {
 				s = doCheck(client, corpus, cfg, rng)
 			}
+			if !intended.IsZero() {
+				s.RespLatency = s.Completed.Sub(intended)
+			}
 			atomic.AddInt64(&checks, int64(s.Items))
 			if s.Err {
-				atomic.AddInt64(&errors, 1)
+				atomic.AddInt64(&errCount, 1)
 			}
 			if s.Mismatch {
 				atomic.AddInt64(&mismatches, 1)
 			}
-			if time.Now().After(warmupEnd) {
+			if s.Completed.After(warmupEnd) {
 				sampleCh <- s
 			}
 		}
@@ -124,12 +180,28 @@ func RunLoad(client *FGAClient, corpus *Corpus, cfg *Config) (*LoadResult, error
 		close(stopRate)
 		close(done)
 	}()
+	res.ErrorsByClass = map[string]int64{}
+	var firstDone, lastDone time.Time
 	for s := range sampleCh {
+		if firstDone.IsZero() || s.Completed.Before(firstDone) {
+			firstDone = s.Completed
+		}
+		if s.Completed.After(lastDone) {
+			lastDone = s.Completed
+		}
+		if s.Err {
+			res.ErrorsByClass[s.ErrClass]++
+			if len(res.ErrorSamples) < maxErrorSamples && s.ErrMsg != "" {
+				res.ErrorSamples = append(res.ErrorSamples, s.ErrMsg)
+			}
+		}
 		res.Samples = append(res.Samples, s)
 	}
 	<-done
 	res.WallClock = time.Since(start)
-	res.TotalErrors = errors
+	res.MeasuredWindow = lastDone.Sub(firstDone)
+	res.DroppedSlots = atomic.LoadInt64(&droppedSlots)
+	res.TotalErrors = errCount
 	res.TotalChecks = checks
 	res.Mismatches = mismatches
 	return res, nil
@@ -145,9 +217,12 @@ func doCheck(client *FGAClient, corpus *Corpus, cfg *Config, rng *rand.Rand) Sam
 		AuthorizationModelID: corpus.ModelID,
 		Consistency:          cfg.Load.Consistency,
 	})
-	s := Sample{Target: e.Target, Conditioned: e.Conditioned, Contextual: e.Contextual, Latency: time.Since(t0), Items: 1}
+	completed := time.Now()
+	s := Sample{Target: e.Target, Conditioned: e.Conditioned, Contextual: e.Contextual, Latency: completed.Sub(t0), Completed: completed, Items: 1}
 	if err != nil {
 		s.Err = true
+		s.ErrClass = classifyErr(err)
+		s.ErrMsg = err.Error()
 	} else if cfg.Load.VerifyResults && allowed != e.Expected {
 		s.Mismatch = true
 	}
@@ -179,9 +254,12 @@ func doBatch(client *FGAClient, corpus *Corpus, cfg *Config, rng *rand.Rand) Sam
 		AuthorizationModelID: corpus.ModelID,
 		Consistency:          cfg.Load.Consistency,
 	})
-	s := Sample{Target: "batch", Conditioned: conditioned, Contextual: contextual, Latency: time.Since(t0), Items: n}
+	completed := time.Now()
+	s := Sample{Target: "batch", Conditioned: conditioned, Contextual: contextual, Latency: completed.Sub(t0), Completed: completed, Items: n}
 	if err != nil {
 		s.Err = true
+		s.ErrClass = classifyErr(err)
+		s.ErrMsg = err.Error()
 		return s
 	}
 	if cfg.Load.VerifyResults {
@@ -209,6 +287,16 @@ type Stats struct {
 }
 
 func Summarize(samples []Sample) Stats {
+	return summarizeBy(samples, func(s Sample) time.Duration { return s.Latency })
+}
+
+// SummarizeResponse summarizes response latency (intended send time to
+// completion); only meaningful for fixed-rate runs.
+func SummarizeResponse(samples []Sample) Stats {
+	return summarizeBy(samples, func(s Sample) time.Duration { return s.RespLatency })
+}
+
+func summarizeBy(samples []Sample, latency func(Sample) time.Duration) Stats {
 	st := Stats{}
 	if len(samples) == 0 {
 		return st
@@ -221,8 +309,9 @@ func Summarize(samples []Sample) Stats {
 			st.Errors++
 			continue
 		}
-		lats = append(lats, s.Latency)
-		sum += s.Latency
+		l := latency(s)
+		lats = append(lats, l)
+		sum += l
 	}
 	st.Count = len(lats)
 	if st.Count == 0 {

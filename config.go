@@ -4,8 +4,12 @@ package main
 // an empty config file against any model should produce a working run.
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -51,12 +55,13 @@ type ContextualConfig struct {
 }
 
 type ProbeConfig struct {
-	Targets      []string `yaml:"targets"`       // "type#relation"; empty = all relations
-	SubjectTypes []string `yaml:"subject_types"` // empty = inferred terminal types
-	Samples      int      `yaml:"samples_per_target"`
-	CohortBias   float64  `yaml:"cohort_bias"`
-	AllowedRatio float64  `yaml:"allowed_ratio"` // -1 keeps the natural mix
-	Concurrency  int      `yaml:"concurrency"`
+	Targets        []string `yaml:"targets"`       // "type#relation"; empty = all relations
+	SubjectTypes   []string `yaml:"subject_types"` // empty = inferred terminal types
+	Samples        int      `yaml:"samples_per_target"`
+	CohortBias     float64  `yaml:"cohort_bias"`
+	AllowedRatio   float64  `yaml:"allowed_ratio"`   // -1 keeps the natural mix
+	MaxDuplication float64  `yaml:"max_duplication"` // resample duplication bound; -1 = unbounded
+	Concurrency    int      `yaml:"concurrency"`
 }
 
 type LoadConfig struct {
@@ -93,12 +98,163 @@ func LoadConfigFile(path string) (*Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("reading config: %w", err)
 		}
-		if err := yaml.Unmarshal(raw, cfg); err != nil {
+		// Unknown keys are fatal: a typo'd knob silently running with defaults
+		// produces numbers that look configured but aren't.
+		dec := yaml.NewDecoder(bytes.NewReader(raw))
+		dec.KnownFields(true)
+		if err := dec.Decode(cfg); err != nil && !errors.Is(err, io.EOF) {
 			return nil, fmt.Errorf("parsing config: %w", err)
 		}
 	}
 	cfg.applyDefaults()
+	if err := cfg.validate(); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
 	return cfg, nil
+}
+
+// validate checks cross-field invariants that don't need the model. Model-
+// dependent keys (fanout, instances, targets, ...) are checked separately in
+// validateAgainstModel because `run` and `cleanup` never load the model.
+func (c *Config) validate() error {
+	switch c.Load.Consistency {
+	case "MINIMIZE_LATENCY", "HIGHER_CONSISTENCY":
+	default:
+		return fmt.Errorf("load.consistency must be MINIMIZE_LATENCY or HIGHER_CONSISTENCY, got %q", c.Load.Consistency)
+	}
+	switch c.Load.Endpoint {
+	case "check", "batch-check":
+	default:
+		return fmt.Errorf("load.endpoint must be check or batch-check, got %q", c.Load.Endpoint)
+	}
+	prob := func(name string, v float64) error {
+		if v < 0 || v > 1 {
+			return fmt.Errorf("%s must be between 0 and 1, got %v", name, v)
+		}
+		return nil
+	}
+	if err := prob("seed.wildcard_probability", c.Seed.WildcardProb); err != nil {
+		return err
+	}
+	if err := prob("probe.cohort_bias", c.Probe.CohortBias); err != nil {
+		return err
+	}
+	if c.Probe.AllowedRatio > 1 {
+		return fmt.Errorf("probe.allowed_ratio must be between 0 and 1 (or negative for the natural mix), got %v", c.Probe.AllowedRatio)
+	}
+	if c.Contextual.AttachProbability != nil {
+		if err := prob("contextual.attach_probability", *c.Contextual.AttachProbability); err != nil {
+			return err
+		}
+	}
+	for _, group := range []struct {
+		name string
+		keys []string
+	}{
+		{"seed.fanout", mapKeys(c.Seed.Fanout)},
+		{"contextual.relations", c.Contextual.Relations},
+		{"probe.targets", c.Probe.Targets},
+	} {
+		for _, k := range group.keys {
+			if !isTypeRelation(k) {
+				return fmt.Errorf("%s key %q must be of the form type#relation", group.name, k)
+			}
+		}
+	}
+	for cond, cc := range c.Conditions {
+		for param, pc := range cc.ParamConfigs {
+			if pc.Pool == "" {
+				continue
+			}
+			if _, ok := c.Pools[pc.Pool]; !ok {
+				return fmt.Errorf("conditions.%s.params.%s references pool %q, which is not defined under pools", cond, param, pc.Pool)
+			}
+		}
+	}
+	positive := func(name string, v int) error {
+		if v <= 0 {
+			return fmt.Errorf("%s must be positive, got %d", name, v)
+		}
+		return nil
+	}
+	for _, p := range []struct {
+		name string
+		v    int
+	}{
+		{"seed.cohorts", c.Seed.Cohorts},
+		{"seed.default_instances", c.Seed.DefaultCount},
+		{"seed.batch_size", c.Seed.BatchSize},
+		{"seed.writers", c.Seed.Writers},
+		{"probe.samples_per_target", c.Probe.Samples},
+		{"probe.concurrency", c.Probe.Concurrency},
+		{"load.concurrency", c.Load.Concurrency},
+		{"load.batch_size", c.Load.BatchSize},
+	} {
+		if err := positive(p.name, p.v); err != nil {
+			return err
+		}
+	}
+	if c.Load.Rate < 0 {
+		return fmt.Errorf("load.rate must be >= 0 (0 = closed loop), got %d", c.Load.Rate)
+	}
+	return nil
+}
+
+// validateAgainstModel verifies that every config key naming a model type or
+// relation actually exists in the loaded model, so a misspelled key fails fast
+// instead of silently using defaults or producing an empty corpus.
+func (c *Config) validateAgainstModel(a *Analysis) error {
+	relations := map[string]bool{}
+	for _, tr := range a.AllRelations {
+		relations[tr.Key()] = true
+	}
+	types := map[string]bool{}
+	for _, t := range a.Types {
+		types[t] = true
+	}
+	for t := range c.Seed.Instances {
+		if !types[t] {
+			return fmt.Errorf("seed.instances names type %q, which is not in the model", t)
+		}
+	}
+	for _, group := range []struct {
+		name string
+		keys []string
+	}{
+		{"seed.fanout", mapKeys(c.Seed.Fanout)},
+		{"contextual.relations", c.Contextual.Relations},
+		{"probe.targets", c.Probe.Targets},
+	} {
+		for _, k := range group.keys {
+			if !relations[k] {
+				return fmt.Errorf("%s names relation %q, which is not in the model", group.name, k)
+			}
+		}
+	}
+	for cond := range c.Conditions {
+		if _, ok := a.Model.Conditions[cond]; !ok {
+			return fmt.Errorf("conditions names condition %q, which is not in the model", cond)
+		}
+	}
+	for _, st := range c.Probe.SubjectTypes {
+		if !types[st] {
+			return fmt.Errorf("probe.subject_types names type %q, which is not in the model", st)
+		}
+	}
+	return nil
+}
+
+func mapKeys(m map[string]int) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
+func isTypeRelation(key string) bool {
+	parts := strings.SplitN(key, "#", 2)
+	return len(parts) == 2 && parts[0] != "" && parts[1] != ""
 }
 
 func (c *Config) applyDefaults() {
@@ -138,6 +294,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Probe.AllowedRatio == 0 {
 		c.Probe.AllowedRatio = 0.5
+	}
+	if c.Probe.MaxDuplication == 0 {
+		c.Probe.MaxDuplication = 5
 	}
 
 	defInt(&c.Load.Concurrency, 16)
