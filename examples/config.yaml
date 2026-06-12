@@ -85,3 +85,9 @@ load:
   duration: 60s
   consistency: MINIMIZE_LATENCY # or HIGHER_CONSISTENCY
   verify_results: true # flag responses that differ from probe expectations
+
+metrics:
+  # OpenFGA Prometheus endpoint; the compose stack publishes :2112. When set,
+  # the findings doc gains a server-side view (request duration, datastore
+  # queries per check, cache hits). Unreachable = section skipped.
+  prometheus_url: http://localhost:2112

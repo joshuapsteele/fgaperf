@@ -253,7 +253,11 @@ func run(client *FGAClient, cfg *Config, st *State) error {
 	}
 	fmt.Printf("load: endpoint=%s concurrency=%d rate=%v warmup=%s duration=%s consistency=%s\n",
 		cfg.Load.Endpoint, cfg.Load.Concurrency, cfg.Load.Rate, cfg.Load.Warmup, cfg.Load.Duration, cfg.Load.Consistency)
-	res, err := RunLoad(client, corpus, cfg)
+	var scraper *MetricsScraper
+	if cfg.Metrics.PrometheusURL != "" {
+		scraper = NewMetricsScraper(cfg.Metrics.PrometheusURL)
+	}
+	res, err := RunLoad(client, corpus, cfg, scraper)
 	if err != nil {
 		return err
 	}
@@ -269,6 +273,10 @@ func run(client *FGAClient, cfg *Config, st *State) error {
 	if report.OfferedRate > 0 {
 		fmt.Printf("achieved rate: %.0f req/s of %d offered (%d slots dropped) | response-latency p99 %sms\n",
 			report.AchievedRate, report.OfferedRate, report.DroppedSlots, ms(report.ResponseLatency.P99))
+	}
+	if report.Server != nil && report.Server.DatastoreQueryCount.Count > 0 {
+		fmt.Printf("server: %.2f datastore queries/request | server-side p99 %.2fms\n",
+			report.Server.DatastoreQueryCount.Mean, report.Server.RequestDuration.P99)
 	}
 	fmt.Printf("wrote %s and %s\n", jsonPath, mdPath)
 	return nil

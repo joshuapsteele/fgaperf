@@ -42,8 +42,19 @@ type Report struct {
 	ByTarget        map[string]Stats `json:"by_target"`
 	ErrorsByClass   map[string]int64 `json:"errors_by_class,omitempty"`
 	ErrorSamples    []string         `json:"error_samples,omitempty"`
+	Server          *ServerMetrics   `json:"server,omitempty"` // diffed Prometheus view of the measured phase
 	SeedDuration    string           `json:"seed_duration,omitempty"`
 	SeedRate        float64          `json:"seed_tuples_per_sec,omitempty"`
+	Environment     Environment      `json:"environment"`
+	ResolvedConfig  map[string]any   `json:"resolved_config,omitempty"` // post-defaults config, credentials redacted
+}
+
+// Environment records where the client side of the measurement ran.
+type Environment struct {
+	OS        string `json:"os"`
+	Arch      string `json:"arch"`
+	CPUs      int    `json:"cpus"`
+	GoVersion string `json:"go_version"`
 }
 
 const toolVersion = "0.1.0"
@@ -69,6 +80,14 @@ func BuildReport(res *LoadResult, corpus *Corpus, cfg *Config, tupleCount int, s
 		ByTarget:       map[string]Stats{},
 		ErrorsByClass:  res.ErrorsByClass,
 		ErrorSamples:   res.ErrorSamples,
+		Server:         res.Server,
+		Environment: Environment{
+			OS:        runtime.GOOS,
+			Arch:      runtime.GOARCH,
+			CPUs:      runtime.NumCPU(),
+			GoVersion: runtime.Version(),
+		},
+		ResolvedConfig: cfg.Resolved(),
 	}
 	if seedDur > 0 {
 		r.SeedDuration = seedDur.String()
@@ -257,6 +276,33 @@ func (r *Report) Markdown() string {
 			}
 			w("")
 		}
+	}
+	if r.Server != nil && r.Server.RequestDuration.Count > 0 {
+		s := r.Server
+		w("## Server-side view")
+		w("")
+		w("Diffed from OpenFGA's Prometheus metrics between the start and end of the measured phase. Percentiles are estimated from histogram buckets, so they are coarser than the client-side numbers above.")
+		w("")
+		w("| Metric | Value |")
+		w("|---|---|")
+		w("| Server-side request duration | mean %.2f ms, p50 %.2f, p95 %.2f, p99 %.2f |",
+			s.RequestDuration.Mean, s.RequestDuration.P50, s.RequestDuration.P95, s.RequestDuration.P99)
+		w("| Server-side requests observed | %.0f |", s.RequestDuration.Count)
+		if s.DatastoreQueryCount.Count > 0 {
+			w("| Datastore queries per request | mean %.2f, p95 %.0f, p99 %.0f |",
+				s.DatastoreQueryCount.Mean, s.DatastoreQueryCount.P95, s.DatastoreQueryCount.P99)
+			w("| Total datastore queries | %.0f |", s.TotalDatastoreQueries)
+		}
+		if s.DispatchCount.Count > 0 {
+			w("| Dispatches per request | mean %.2f, p95 %.0f, p99 %.0f |",
+				s.DispatchCount.Mean, s.DispatchCount.P95, s.DispatchCount.P99)
+		}
+		if s.CheckCacheTotal > 0 {
+			w("| Check cache hit rate | %.1f%% of %.0f lookups |", 100*s.CheckCacheHits/s.CheckCacheTotal, s.CheckCacheTotal)
+		}
+		w("")
+		w("Datastore queries per request is the capacity currency for OpenFGA sizing: it tells you how much database load each check translates into, independent of network and JSON overhead.")
+		w("")
 	}
 	if r.SeedRate > 0 {
 		w("## Write path")

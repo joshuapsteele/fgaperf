@@ -25,6 +25,7 @@ type Config struct {
 	Contextual ContextualConfig      `yaml:"contextual"`
 	Probe      ProbeConfig           `yaml:"probe"`
 	Load       LoadConfig            `yaml:"load"`
+	Metrics    MetricsConfig         `yaml:"metrics"`
 	Conditions map[string]CondConfig `yaml:"conditions"`
 	Pools      map[string]PoolConfig `yaml:"pools"`
 	RandomSeed int64                 `yaml:"random_seed"`
@@ -73,6 +74,15 @@ type LoadConfig struct {
 	Endpoint      string        `yaml:"endpoint"`       // check | batch-check
 	BatchSize     int           `yaml:"batch_size"`     // for batch-check
 	VerifyResults bool          `yaml:"verify_results"` // compare allowed against probe expectations
+}
+
+type MetricsConfig struct {
+	// PrometheusURL points at OpenFGA's metrics endpoint (the bundled compose
+	// stack publishes http://localhost:2112). When set, the run scrapes it at
+	// the start and end of the measured phase and reports the server-side
+	// view: request duration, datastore queries per check, dispatches, cache
+	// hits. Unset or unreachable degrades to the client-side-only report.
+	PrometheusURL string `yaml:"prometheus_url"`
 }
 
 type CondConfig struct {
@@ -316,6 +326,27 @@ func (c *Config) applyDefaults() {
 	if _, ok := c.Pools["default"]; !ok {
 		c.Pools["default"] = PoolConfig{Prefix: "val-", Count: 16}
 	}
+}
+
+// Resolved returns the post-defaults config as a generic map (yaml key names
+// preserved) for embedding in results JSON, with credentials redacted.
+// Results files outlive memory of how they were produced; this plus the
+// random seed is everything needed to recreate a run.
+func (c *Config) Resolved() map[string]any {
+	raw, err := yaml.Marshal(c)
+	if err != nil {
+		return nil
+	}
+	var m map[string]any
+	if yaml.Unmarshal(raw, &m) != nil {
+		return nil
+	}
+	if of, ok := m["openfga"].(map[string]any); ok {
+		if tok, ok := of["api_token"].(string); ok && tok != "" {
+			of["api_token"] = "REDACTED"
+		}
+	}
+	return m
 }
 
 func (p PoolConfig) Materialize() []string {

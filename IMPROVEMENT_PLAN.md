@@ -198,7 +198,7 @@ example and the private config pass; bad configs covered in `config_test.go`.
 
 ## P1 — High-value capability gaps
 
-### 6. Capture server-side metrics alongside client-side latency
+### 6. Capture server-side metrics alongside client-side latency ✅
 
 **Motivation.** This is the single most valuable OpenFGA-specific addition.
 Client-side latency conflates network, JSON, and server work. OpenFGA exposes
@@ -222,6 +222,19 @@ currency for OpenFGA sizing, and no client-side number can substitute for it.
 **Accept.** Against the bundled compose stack, the findings doc includes a
 "Server-side view" section with datastore queries per check; the tool still
 works (section omitted) when the URL is unset or unreachable.
+
+**Done (2026-06-12).** New `metrics.go` with a minimal Prometheus text parser
+(no client dependency): snapshots at the warmup/measured boundary (background
+goroutine in `RunLoad`) and after the last worker, diffed with counter-reset
+clamping. Families: `openfga_request_duration_ms`,
+`openfga_datastore_query_count`, `openfga_dispatch_count` (histograms,
+aggregated across label sets — the diff window isolates load traffic) and the
+check-cache counters. Percentiles are bucket-interpolated à la
+`histogram_quantile`. `metrics.prometheus_url` is set in
+`examples/config.yaml`; scrape failures warn and skip the section. Verified
+against the compose stack: findings doc reported 9.74 datastore queries per
+request, server-side p99 7.57 ms. Parser/diff/quantile unit tests in
+`metrics_test.go`.
 
 ### 7. Rate sweep: find the saturation knee automatically
 
@@ -261,7 +274,7 @@ duration differ.
 **Accept.** Two runs differing only in `load.consistency` produce a compare
 doc showing per-relation deltas and naming the one config difference.
 
-### 9. Embed the resolved config and environment in results JSON
+### 9. Embed the resolved config and environment in results JSON ✅
 
 **Motivation.** Reproducibility. The current `Report` records a handful of
 load parameters but not the seed graph shape, fanout, pools, condition
@@ -279,6 +292,14 @@ warning note when the working tree is dirty versus the recorded tool version.
 
 **Accept.** A results JSON alone is sufficient to recreate the run: it
 contains every knob that affects generation and load.
+
+**Done (2026-06-12).** `Config.Resolved()` round-trips the post-defaults
+config through YAML into a generic map (yaml key names and human-readable
+durations preserved; `openfga.api_token` redacted when set) and embeds it as
+`resolved_config` in the results JSON, alongside an `environment` block
+(os/arch/cpus/go version). OpenFGA exposes no version endpoint over HTTP, so
+server version is not recorded. Verified in a live run: `random_seed`, seed
+shape, pools, and load knobs all present in the output JSON.
 
 ### 10. Mixed read/write workloads
 

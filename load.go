@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"os"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -47,7 +48,8 @@ type LoadResult struct {
 	TotalChecks    int64
 	Mismatches     int64
 	ErrorsByClass  map[string]int64
-	ErrorSamples   []string // first few verbatim error strings from the measured phase
+	ErrorSamples   []string       // first few verbatim error strings from the measured phase
+	Server         *ServerMetrics // diffed Prometheus view of the measured phase; nil when not scraped
 }
 
 const maxErrorSamples = 5
@@ -74,7 +76,10 @@ func classifyErr(err error) string {
 	return "connection"
 }
 
-func RunLoad(client *FGAClient, corpus *Corpus, cfg *Config) (*LoadResult, error) {
+// RunLoad replays the corpus. scraper may be nil; when set, server metrics
+// are snapshotted at the warmup/measured boundary and after the last worker
+// exits, off the request path.
+func RunLoad(client *FGAClient, corpus *Corpus, cfg *Config, scraper *MetricsScraper) (*LoadResult, error) {
 	if len(corpus.Entries) == 0 {
 		return nil, fmt.Errorf("corpus is empty; run probe first")
 	}
@@ -91,6 +96,19 @@ func RunLoad(client *FGAClient, corpus *Corpus, cfg *Config) (*LoadResult, error
 	start := time.Now()
 	warmupEnd := start.Add(lc.Warmup)
 	deadline := start.Add(lc.Warmup + lc.Duration)
+
+	beforeSnap := make(chan *snapshot, 1)
+	if scraper != nil {
+		go func() {
+			time.Sleep(time.Until(warmupEnd))
+			s, err := scraper.Snapshot()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "metrics: snapshot at measured-phase start failed, skipping server-side view: %v\n", err)
+				return
+			}
+			beforeSnap <- s
+		}()
+	}
 
 	// Fixed-rate mode dispatches *intended* send times computed from the slot
 	// schedule (slot N fires at start + N*interval), never from when a worker
@@ -198,6 +216,17 @@ func RunLoad(client *FGAClient, corpus *Corpus, cfg *Config) (*LoadResult, error
 		res.Samples = append(res.Samples, s)
 	}
 	<-done
+	if scraper != nil {
+		if after, err := scraper.Snapshot(); err != nil {
+			fmt.Fprintf(os.Stderr, "metrics: snapshot at measured-phase end failed, skipping server-side view: %v\n", err)
+		} else {
+			select {
+			case before := <-beforeSnap:
+				res.Server = buildServerMetrics(before, after)
+			default: // start snapshot failed; nothing to diff against
+			}
+		}
+	}
 	res.WallClock = time.Since(start)
 	res.MeasuredWindow = lastDone.Sub(firstDone)
 	res.DroppedSlots = atomic.LoadInt64(&droppedSlots)
