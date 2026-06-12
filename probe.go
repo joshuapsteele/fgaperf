@@ -33,6 +33,7 @@ type Corpus struct {
 	StoreID string                       `json:"store_id"`
 	ModelID string                       `json:"model_id"`
 	Stats   map[string]CorpusTargetStats `json:"target_stats,omitempty"`
+	Weights map[string]float64           `json:"weights,omitempty"` // load traffic share per target; absent = uniform over entries
 	Entries []CorpusEntry                `json:"entries"`
 }
 
@@ -90,7 +91,7 @@ func BuildCorpus(client *FGAClient, a *Analysis, w *World, cfg *Config, storeID,
 	targets := cfg.Probe.Targets
 	if len(targets) == 0 {
 		for _, tr := range a.AllRelations {
-			targets = append(targets, tr.Key())
+			targets = append(targets, TargetSpec{Relation: tr.Key(), Weight: 1})
 		}
 	}
 	subjectTypes := cfg.Probe.SubjectTypes
@@ -103,7 +104,8 @@ func BuildCorpus(client *FGAClient, a *Analysis, w *World, cfg *Config, storeID,
 
 	rng := rand.New(rand.NewSource(cfg.RandomSeed + 1))
 	var candidates []CorpusEntry
-	for _, target := range targets {
+	for _, spec := range targets {
+		target := spec.Relation
 		parts := strings.SplitN(target, "#", 2)
 		if len(parts) != 2 {
 			return nil, fmt.Errorf("bad target %q, want type#relation", target)
@@ -191,6 +193,19 @@ func BuildCorpus(client *FGAClient, a *Analysis, w *World, cfg *Config, storeID,
 	sort.SliceStable(entries, func(i, j int) bool { return entries[i].Target < entries[j].Target })
 	c := &Corpus{StoreID: storeID, ModelID: modelID, Entries: entries}
 	c.Stats = c.TargetStats()
+	// Persist weights only when configured: their absence keeps the load
+	// phase's original uniform-over-entries behavior.
+	weighted := false
+	weights := map[string]float64{}
+	for _, spec := range targets {
+		weights[spec.Relation] = spec.Weight
+		if spec.Weight != 1 {
+			weighted = true
+		}
+	}
+	if weighted {
+		c.Weights = weights
+	}
 	return c, nil
 }
 

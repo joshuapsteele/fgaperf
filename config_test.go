@@ -103,7 +103,7 @@ func TestValidateAgainstModel(t *testing.T) {
 	}
 	good.Seed.Fanout = map[string]int{"document#viewer": 3}
 	good.Seed.Instances = map[string]int{"document": 10}
-	good.Probe.Targets = []string{"document#can_share"}
+	good.Probe.Targets = []TargetSpec{{Relation: "document#can_share", Weight: 1}}
 	good.Probe.SubjectTypes = []string{"user"}
 	good.Contextual.Relations = []string{"document#active_context"}
 	good.Conditions = map[string]CondConfig{"has_scope": {}}
@@ -114,7 +114,7 @@ func TestValidateAgainstModel(t *testing.T) {
 	bad := []func(c *Config){
 		func(c *Config) { c.Seed.Fanout = map[string]int{"document#vewer": 3} },
 		func(c *Config) { c.Seed.Instances = map[string]int{"documnet": 10} },
-		func(c *Config) { c.Probe.Targets = []string{"document#nope"} },
+		func(c *Config) { c.Probe.Targets = []TargetSpec{{Relation: "document#nope", Weight: 1}} },
 		func(c *Config) { c.Probe.SubjectTypes = []string{"robot"} },
 		func(c *Config) { c.Contextual.Relations = []string{"folder#active_context"} },
 		func(c *Config) { c.Conditions = map[string]CondConfig{"no_such_condition": {}} },
@@ -125,6 +125,23 @@ func TestValidateAgainstModel(t *testing.T) {
 		if err := cfg.validateAgainstModel(a); err == nil {
 			t.Errorf("bad config %d passed model validation", i)
 		}
+	}
+}
+
+// probe.targets accepts both bare strings and {relation, weight} maps.
+func TestTargetSpecYAMLForms(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	yaml := "probe:\n  targets:\n    - document#viewer\n    - relation: document#editor\n      weight: 8\n"
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfigFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []TargetSpec{{Relation: "document#viewer", Weight: 1}, {Relation: "document#editor", Weight: 8}}
+	if len(cfg.Probe.Targets) != 2 || cfg.Probe.Targets[0] != want[0] || cfg.Probe.Targets[1] != want[1] {
+		t.Errorf("targets = %+v, want %+v", cfg.Probe.Targets, want)
 	}
 }
 

@@ -56,13 +56,41 @@ type ContextualConfig struct {
 }
 
 type ProbeConfig struct {
-	Targets        []string `yaml:"targets"`       // "type#relation"; empty = all relations
-	SubjectTypes   []string `yaml:"subject_types"` // empty = inferred terminal types
-	Samples        int      `yaml:"samples_per_target"`
-	CohortBias     float64  `yaml:"cohort_bias"`
-	AllowedRatio   float64  `yaml:"allowed_ratio"`   // -1 keeps the natural mix
-	MaxDuplication float64  `yaml:"max_duplication"` // resample duplication bound; -1 = unbounded
-	Concurrency    int      `yaml:"concurrency"`
+	Targets        []TargetSpec `yaml:"targets"`       // empty = all relations, weight 1
+	SubjectTypes   []string     `yaml:"subject_types"` // empty = inferred terminal types
+	Samples        int          `yaml:"samples_per_target"`
+	CohortBias     float64      `yaml:"cohort_bias"`
+	AllowedRatio   float64      `yaml:"allowed_ratio"`   // -1 keeps the natural mix
+	MaxDuplication float64      `yaml:"max_duplication"` // resample duplication bound; -1 = unbounded
+	Concurrency    int          `yaml:"concurrency"`
+}
+
+// TargetSpec names a probe target. In YAML it is either a bare string
+// ("document#viewer", weight 1) or a map with an optional traffic weight
+// ({relation: document#viewer, weight: 8}). Weights skew the load phase's
+// traffic mix toward production-like shares; probing itself samples every
+// target equally.
+type TargetSpec struct {
+	Relation string  `yaml:"relation"` // "type#relation"
+	Weight   float64 `yaml:"weight"`
+}
+
+func (t *TargetSpec) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		t.Relation = node.Value
+		t.Weight = 1
+		return nil
+	}
+	type plain TargetSpec // dodge recursive UnmarshalYAML
+	var p plain
+	if err := node.Decode(&p); err != nil {
+		return err
+	}
+	*t = TargetSpec(p)
+	if t.Weight == 0 {
+		t.Weight = 1
+	}
+	return nil
 }
 
 type LoadConfig struct {
@@ -172,12 +200,19 @@ func (c *Config) validate() error {
 	}{
 		{"seed.fanout", mapKeys(c.Seed.Fanout)},
 		{"contextual.relations", c.Contextual.Relations},
-		{"probe.targets", c.Probe.Targets},
 	} {
 		for _, k := range group.keys {
 			if !isTypeRelation(k) {
 				return fmt.Errorf("%s key %q must be of the form type#relation", group.name, k)
 			}
+		}
+	}
+	for _, t := range c.Probe.Targets {
+		if !isTypeRelation(t.Relation) {
+			return fmt.Errorf("probe.targets entry %q must be of the form type#relation", t.Relation)
+		}
+		if t.Weight < 0 {
+			return fmt.Errorf("probe.targets weight for %q must be positive, got %v", t.Relation, t.Weight)
 		}
 	}
 	for cond, cc := range c.Conditions {
@@ -253,12 +288,16 @@ func (c *Config) validateAgainstModel(a *Analysis) error {
 	}{
 		{"seed.fanout", mapKeys(c.Seed.Fanout)},
 		{"contextual.relations", c.Contextual.Relations},
-		{"probe.targets", c.Probe.Targets},
 	} {
 		for _, k := range group.keys {
 			if !relations[k] {
 				return fmt.Errorf("%s names relation %q, which is not in the model", group.name, k)
 			}
+		}
+	}
+	for _, t := range c.Probe.Targets {
+		if !relations[t.Relation] {
+			return fmt.Errorf("probe.targets names relation %q, which is not in the model", t.Relation)
 		}
 	}
 	for cond := range c.Conditions {

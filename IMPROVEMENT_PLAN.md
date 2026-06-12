@@ -346,7 +346,7 @@ Currently writes only happen at seed time.
 **Accept.** A run with churn enabled shows zero verification mismatches and
 visibly different check latency vs a churn-free run with caching enabled.
 
-### 11. Per-target workload weights
+### 11. Per-target workload weights ✅
 
 **Motivation.** Probe samples every target equally and load replays the
 corpus uniformly, so every relation gets the same traffic share. Real traffic
@@ -362,6 +362,16 @@ row becomes mix-weighted. Default weight 1 preserves current behavior.
 
 **Accept.** Doubling one target's weight roughly doubles its request share in
 the per-relation table without changing other targets' latency stats.
+
+**Done (2026-06-12).** `probe.targets` entries are now either bare strings
+(weight 1) or `{relation: type#rel, weight: N}` maps (`TargetSpec` with custom
+YAML unmarshal). Probe still samples every target equally; weights are
+persisted in `corpus.json` (only when any differ from 1) and the load phase's
+`corpusPicker` selects a target proportionally to weight, then an entry
+uniformly within it. Without weights the picker is uniform over entries —
+bit-for-bit the original behavior. Verified live: weight 8 on
+`document#editor` among five targets produced a 66.3% request share
+(expected 8/12 ≈ 66.7%).
 
 ### 12. Richer generation shapes: per-user-type fanout and value distributions
 
@@ -391,7 +401,7 @@ reorder existing RNG consumption for configs that don't use the new knobs
 members, and a tuple set whose condition map sizes follow a configured
 bimodal distribution — verified by a unit test over generated tuples.
 
-### 13. Mismatch diagnostics
+### 13. Mismatch diagnostics ✅
 
 **Motivation.** `verify_results` counts mismatches but discards *which* checks
 mismatched, making the most alarming number in the report uninvestigable.
@@ -404,6 +414,15 @@ when nonzero. Mention the file in the findings doc.
 
 **Accept.** A run with `MINIMIZE_LATENCY` plus aggressive query caching and
 background churn (item 10) produces an actionable mismatch file.
+
+**Done (2026-06-12).** Workers record mismatched corpus entries
+(observed-vs-expected) into a mutex-guarded recorder — locked only on
+mismatches, so the hot path is untouched — deduplicated by check identity and
+capped at 100. `Report.Save` writes `results/mismatches-<stamp>.json` when
+nonempty, records the path in the results JSON, and the findings doc names
+the file. Sweep runs merge records across steps. Verified mechanically by
+flipping 30 corpus expectations and re-running: 1315 raw mismatches collapsed
+to the 18 distinct flipped checks, all correctly attributed.
 
 ---
 

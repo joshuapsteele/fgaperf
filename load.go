@@ -48,11 +48,105 @@ type LoadResult struct {
 	TotalChecks    int64
 	Mismatches     int64
 	ErrorsByClass  map[string]int64
-	ErrorSamples   []string       // first few verbatim error strings from the measured phase
-	Server         *ServerMetrics // diffed Prometheus view of the measured phase; nil when not scraped
+	ErrorSamples    []string       // first few verbatim error strings from the measured phase
+	Server          *ServerMetrics // diffed Prometheus view of the measured phase; nil when not scraped
+	MismatchRecords []MismatchRecord
 }
 
-const maxErrorSamples = 5
+const (
+	maxErrorSamples    = 5
+	maxMismatchRecords = 100
+)
+
+// MismatchRecord identifies a corpus entry whose response under load differed
+// from its probe-time expectation — the raw material for investigating cache
+// staleness or consistency effects.
+type MismatchRecord struct {
+	User     string `json:"user"`
+	Relation string `json:"relation"`
+	Object   string `json:"object"`
+	Target   string `json:"target"`
+	Expected bool   `json:"expected"`
+	Observed bool   `json:"observed"`
+}
+
+// mismatchRecorder collects deduplicated mismatches, capped so a
+// systematically stale cache can't balloon memory. The lock is only taken on
+// mismatches, which are exceptional.
+type mismatchRecorder struct {
+	mu   sync.Mutex
+	seen map[string]bool
+	out  []MismatchRecord
+}
+
+func newMismatchRecorder() *mismatchRecorder {
+	return &mismatchRecorder{seen: map[string]bool{}}
+}
+
+func (r *mismatchRecorder) record(e *CorpusEntry, observed bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	k := e.key()
+	if r.seen[k] || len(r.out) >= maxMismatchRecords {
+		return
+	}
+	r.seen[k] = true
+	r.out = append(r.out, MismatchRecord{
+		User: e.User, Relation: e.Relation, Object: e.Object,
+		Target: e.Target, Expected: e.Expected, Observed: observed,
+	})
+}
+
+// corpusPicker selects corpus entries for replay. Without configured weights
+// it is uniform over entries (every corpus entry equally likely, the original
+// behavior). With weights, a target is chosen proportionally to its weight
+// and an entry uniformly within it, so the traffic mix follows the configured
+// production-like skew.
+type corpusPicker struct {
+	entries []CorpusEntry
+	groups  [][]int   // entry indices per weighted target
+	cum     []float64 // cumulative weights aligned with groups
+	total   float64
+}
+
+func newCorpusPicker(c *Corpus) *corpusPicker {
+	p := &corpusPicker{entries: c.Entries}
+	if len(c.Weights) == 0 {
+		return p
+	}
+	byTarget := map[string][]int{}
+	var targets []string
+	for i, e := range c.Entries {
+		if _, ok := byTarget[e.Target]; !ok {
+			targets = append(targets, e.Target)
+		}
+		byTarget[e.Target] = append(byTarget[e.Target], i)
+	}
+	sort.Strings(targets)
+	for _, t := range targets {
+		w := c.Weights[t]
+		if w <= 0 {
+			w = 1
+		}
+		p.total += w
+		p.groups = append(p.groups, byTarget[t])
+		p.cum = append(p.cum, p.total)
+	}
+	return p
+}
+
+func (p *corpusPicker) pick(rng *rand.Rand) *CorpusEntry {
+	if len(p.groups) == 0 {
+		return &p.entries[rng.Intn(len(p.entries))]
+	}
+	x := rng.Float64() * p.total
+	i := sort.SearchFloat64s(p.cum, x)
+	if i >= len(p.groups) {
+		i = len(p.groups) - 1
+	}
+	g := p.groups[i]
+	return &p.entries[g[rng.Intn(len(g))]]
+}
 
 // classifyErr buckets a request error for reporting. The classes are coarse on
 // purpose; ErrorSamples carries the verbatim strings for diagnosis.
@@ -152,6 +246,8 @@ func RunLoad(client *FGAClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 	var wg sync.WaitGroup
 	sampleCh := make(chan Sample, 4096)
 	var errCount, checks, mismatches int64
+	picker := newCorpusPicker(corpus)
+	mism := newMismatchRecorder()
 
 	worker := func(id int) {
 		defer wg.Done()
@@ -167,9 +263,9 @@ func RunLoad(client *FGAClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 			}
 			var s Sample
 			if lc.Endpoint == "batch-check" {
-				s = doBatch(client, corpus, cfg, rng)
+				s = doBatch(client, picker, mism, corpus, cfg, rng)
 			} else {
-				s = doCheck(client, corpus, cfg, rng)
+				s = doCheck(client, picker, mism, corpus, cfg, rng)
 			}
 			if !intended.IsZero() {
 				s.RespLatency = s.Completed.Sub(intended)
@@ -233,6 +329,7 @@ func RunLoad(client *FGAClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 	res.TotalErrors = errCount
 	res.TotalChecks = checks
 	res.Mismatches = mismatches
+	res.MismatchRecords = mism.out
 	return res, nil
 }
 
@@ -266,8 +363,8 @@ func RunSweep(client *FGAClient, corpus *Corpus, cfg *Config, scraper *MetricsSc
 	return results, nil
 }
 
-func doCheck(client *FGAClient, corpus *Corpus, cfg *Config, rng *rand.Rand) Sample {
-	e := corpus.Entries[rng.Intn(len(corpus.Entries))]
+func doCheck(client *FGAClient, picker *corpusPicker, mism *mismatchRecorder, corpus *Corpus, cfg *Config, rng *rand.Rand) Sample {
+	e := picker.pick(rng)
 	t0 := time.Now()
 	allowed, err := client.Check(corpus.StoreID, CheckRequest{
 		TupleKey:             CheckTupleKey{User: e.User, Relation: e.Relation, Object: e.Object},
@@ -284,18 +381,19 @@ func doCheck(client *FGAClient, corpus *Corpus, cfg *Config, rng *rand.Rand) Sam
 		s.ErrMsg = err.Error()
 	} else if cfg.Load.VerifyResults && allowed != e.Expected {
 		s.Mismatch = true
+		mism.record(e, allowed)
 	}
 	return s
 }
 
-func doBatch(client *FGAClient, corpus *Corpus, cfg *Config, rng *rand.Rand) Sample {
+func doBatch(client *FGAClient, picker *corpusPicker, mism *mismatchRecorder, corpus *Corpus, cfg *Config, rng *rand.Rand) Sample {
 	n := cfg.Load.BatchSize
 	items := make([]BatchCheckItem, n)
 	conditioned := false
 	contextual := false
-	expected := make(map[string]bool, n)
+	entries := make(map[string]*CorpusEntry, n)
 	for i := 0; i < n; i++ {
-		e := corpus.Entries[rng.Intn(len(corpus.Entries))]
+		e := picker.pick(rng)
 		id := fmt.Sprintf("c%d", i)
 		items[i] = BatchCheckItem{
 			TupleKey:         CheckTupleKey{User: e.User, Relation: e.Relation, Object: e.Object},
@@ -303,7 +401,7 @@ func doBatch(client *FGAClient, corpus *Corpus, cfg *Config, rng *rand.Rand) Sam
 			Context:          e.Context,
 			CorrelationID:    id,
 		}
-		expected[id] = e.Expected
+		entries[id] = e
 		conditioned = conditioned || e.Conditioned
 		contextual = contextual || e.Contextual
 	}
@@ -323,8 +421,9 @@ func doBatch(client *FGAClient, corpus *Corpus, cfg *Config, rng *rand.Rand) Sam
 	}
 	if cfg.Load.VerifyResults {
 		for id, r := range resp.Result {
-			if want, ok := expected[id]; ok && r.Error == nil && r.Allowed != want {
+			if e, ok := entries[id]; ok && r.Error == nil && r.Allowed != e.Expected {
 				s.Mismatch = true
+				mism.record(e, r.Allowed)
 			}
 		}
 	}

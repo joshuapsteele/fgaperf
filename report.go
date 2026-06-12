@@ -50,6 +50,9 @@ type Report struct {
 	SeedRate        float64          `json:"seed_tuples_per_sec,omitempty"`
 	Environment     Environment      `json:"environment"`
 	ResolvedConfig  map[string]any   `json:"resolved_config,omitempty"` // post-defaults config, credentials redacted
+	MismatchFile    string           `json:"mismatch_file,omitempty"`   // written by Save when mismatches occurred
+
+	mismatchRecords []MismatchRecord // written to MismatchFile by Save
 }
 
 // Environment records where the client side of the measurement ran.
@@ -113,6 +116,19 @@ func BuildSweepReport(results []*LoadResult, corpus *Corpus, cfg *Config, tupleC
 	if kneeIdx >= 0 {
 		r.SweepKneeRate = steps[kneeIdx].OfferedRate
 	}
+	// Merge mismatch records across all steps, not just the headline one.
+	seen := map[string]bool{}
+	r.mismatchRecords = nil
+	for _, res := range results {
+		for _, m := range res.MismatchRecords {
+			k := m.User + "|" + m.Relation + "|" + m.Object
+			if seen[k] || len(r.mismatchRecords) >= maxMismatchRecords {
+				continue
+			}
+			seen[k] = true
+			r.mismatchRecords = append(r.mismatchRecords, m)
+		}
+	}
 	if cfg.Load.SLOP99 > 0 {
 		r.SLOP99 = cfg.Load.SLOP99.String()
 	}
@@ -148,6 +164,8 @@ func BuildReport(res *LoadResult, corpus *Corpus, cfg *Config, tupleCount int, s
 			GoVersion: runtime.Version(),
 		},
 		ResolvedConfig: cfg.Resolved(),
+
+		mismatchRecords: res.MismatchRecords,
 	}
 	if seedDur > 0 {
 		r.SeedDuration = seedDur.String()
@@ -205,6 +223,17 @@ func (r *Report) Save(dir string) (string, string, error) {
 	stamp := r.GeneratedAt.Format("20060102-150405")
 	jsonPath := filepath.Join(dir, "results-"+stamp+".json")
 	mdPath := filepath.Join(dir, "findings-"+stamp+".md")
+	if len(r.mismatchRecords) > 0 {
+		mmPath := filepath.Join(dir, "mismatches-"+stamp+".json")
+		mmData, err := json.MarshalIndent(r.mismatchRecords, "", " ")
+		if err != nil {
+			return "", "", err
+		}
+		if err := os.WriteFile(mmPath, mmData, 0o644); err != nil {
+			return "", "", err
+		}
+		r.MismatchFile = mmPath // recorded in results JSON and findings doc below
+	}
 	data, err := json.MarshalIndent(r, "", " ")
 	if err != nil {
 		return "", "", err
@@ -259,8 +288,12 @@ func (r *Report) Markdown() string {
 		}
 		w("")
 	}
+	mismatchNote := mismatchSentence(r.Mismatches)
+	if r.MismatchFile != "" {
+		mismatchNote += fmt.Sprintf(" The mismatched checks (deduplicated, capped at %d) are listed in `%s`.", maxMismatchRecords, filepath.Base(r.MismatchFile))
+	}
 	w("Sustained throughput was %.0f checks/sec over the %s measured window, with %d errors out of %d measured requests. %s",
-		r.Throughput, r.MeasuredWindow, r.Overall.Errors, r.Overall.Count+r.Overall.Errors, mismatchSentence(r.Mismatches))
+		r.Throughput, r.MeasuredWindow, r.Overall.Errors, r.Overall.Count+r.Overall.Errors, mismatchNote)
 	w("")
 	if r.OfferedRate > 0 {
 		w("Achieved request rate was %.0f req/s against an offered %d req/s, with %d rate slots dropped because all workers were busy.",
