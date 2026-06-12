@@ -7,6 +7,8 @@
 # local model and config (private; the public repo ships examples/ instead)
 /main-model.json
 /config.yaml
+/models/
+/tests/
 
 .DS_Store
 .claude/
