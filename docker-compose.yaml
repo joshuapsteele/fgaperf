@@ -1,0 +1,58 @@
+# Postgres-backed OpenFGA target for performance testing. The in-memory
+# engine is fine for smoke tests but meaningless for performance work; this
+# is the configuration to measure against.
+#
+#   docker compose up -d
+#   ./fgaperf all -config examples/config.yaml
+#
+# To exercise the check query cache (relevant when comparing MINIMIZE_LATENCY
+# vs HIGHER_CONSISTENCY), uncomment the cache environment variables below.
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: openfga
+      POSTGRES_PASSWORD: openfga
+      POSTGRES_DB: openfga
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openfga"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "5432:5432"
+
+  migrate:
+    image: openfga/openfga:v1.17.1
+    command: migrate
+    environment:
+      OPENFGA_DATASTORE_ENGINE: postgres
+      OPENFGA_DATASTORE_URI: postgres://openfga:openfga@postgres:5432/openfga?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  openfga:
+    image: openfga/openfga:v1.17.1
+    command: run
+    environment:
+      OPENFGA_DATASTORE_ENGINE: postgres
+      OPENFGA_DATASTORE_URI: postgres://openfga:openfga@postgres:5432/openfga?sslmode=disable
+      OPENFGA_DATASTORE_MAX_OPEN_CONNS: "50"
+      OPENFGA_PLAYGROUND_ENABLED: "false"
+      OPENFGA_METRICS_ENABLED: "true"
+      OPENFGA_DATASTORE_METRICS_ENABLED: "true"
+      # Pre-shared key auth, for testing against authenticated deployments:
+      # OPENFGA_AUTHN_METHOD: preshared
+      # OPENFGA_AUTHN_PRESHARED_KEYS: "local-perf-key"
+      # Check query cache, for consistency-mode comparisons:
+      # OPENFGA_CHECK_QUERY_CACHE_ENABLED: "true"
+      # OPENFGA_CHECK_QUERY_CACHE_TTL: "10s"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "8080:8080" # HTTP API
+      - "8081:8081" # gRPC
+      - "2112:2112" # Prometheus metrics

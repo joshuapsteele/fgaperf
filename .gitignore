@@ -1,0 +1,12 @@
+# build and run artifacts
+/fgaperf
+/results/
+/corpus.json
+/.fgaperf-state.json
+
+# local model and config (private; the public repo ships examples/ instead)
+/main-model.json
+/config.yaml
+
+.DS_Store
+.claude/

@@ -1,0 +1,78 @@
+# fgaperf configuration, tuned for the example document-sharing model in
+# examples/model.json. Every field is optional; built-in defaults produce a
+# working run for any compiled model. Durations use Go syntax (30s, 5m).
+#
+# The example model exercises every feature the tool measures: direct tuples,
+# usersets (group#member), tuple-to-userset (parent folders), a recursive
+# relation (folder#parent), an intersection (document#can_share requires the
+# same user to be directly shareable AND a viewer), and a CEL-conditioned
+# wildcard (user:* can view a document when the request carries a matching
+# scope).
+
+openfga:
+  api_url: http://localhost:8080
+  store_name: fgaperf-example
+  # api_token: <pre-shared key, if OPENFGA_AUTHN_METHOD=preshared>
+  timeout: 10s
+
+model_file: examples/model.json
+output_dir: results
+
+random_seed: 42 # fixed seed makes tuple generation reproducible across runs
+
+# keep_store: true   # skip the automatic store deletion at the end of `all`
+
+seed:
+  cohorts: 5 # think of a cohort as a tenant; tuples link within cohorts
+  default_instances: 25
+  instances:
+    user: 250
+    group: 25
+    folder: 50
+    document: 150
+  default_fanout: 2 # tuples per (object, relation, allowed user type)
+  fanout:
+    group#member: 8
+    folder#parent: 1 # folder nesting; links only point "downward", so no cycles
+    document#parent: 1
+  batch_size: 100 # max tuples per Write call (server default cap)
+  writers: 8
+  wildcard_probability: 0.5 # chance each document gets a conditioned `user:*` viewer tuple
+
+# Condition context generation. Without this block the tool defaults to:
+# map/list parameters bound on the tuple, scalars supplied at check time,
+# values drawn from a shared 16-value pool with 4 map keys (~25% true rate).
+conditions:
+  has_scope:
+    tuple_params: [granted_scopes]
+    params:
+      granted_scopes: { pool: scopes, keys: 4 }
+      required_scope: { pool: scopes }
+
+pools:
+  scopes:
+    prefix: "scope-"
+    count: 16
+
+probe:
+  # The relations worth measuring for this model. Omit to probe everything.
+  targets:
+    - document#viewer # deepest path, CEL-reachable via the conditioned wildcard
+    - document#can_share # intersection, CEL-reachable through viewer
+    - document#editor # unconditioned, medium depth
+    - folder#viewer # unconditioned, recursive through parent
+    - group#member # unconditioned shallow baseline
+  samples_per_target: 200
+  cohort_bias: 0.85 # probability a probe subject comes from the object's cohort
+  allowed_ratio: 0.5 # resample corpus to 50/50 allowed/denied; -1 keeps natural mix
+  concurrency: 8
+
+load:
+  endpoint: check # or batch-check
+  batch_size: 20 # items per batch-check request
+  concurrency: 16 # parallel workers
+  rate: 0 # fixed offered req/s; 0 = closed loop
+  warmup: 10s
+  duration: 60s
+  consistency: MINIMIZE_LATENCY # or HIGHER_CONSISTENCY
+  verify_results: true # flag responses that differ from probe expectations
