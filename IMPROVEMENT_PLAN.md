@@ -498,13 +498,26 @@ end-to-end: `all -warmup 2s -duration 5s -concurrency 8` reflected all three in
 the load line and the resolved config. Unit test `TestApplyOverrides` covers
 apply/no-op/bad-override.
 
-### 16. Latency timeline in the report
+### 16. Latency timeline in the report ✅
 
 Per-second (or per-5s) p50/p99 + throughput series over the measured window,
 as a table in JSON and a sparkline-ish markdown table. Catches cache fill-in,
 GC pauses, and degradation that aggregate percentiles hide; cheap to compute
 from existing samples if each sample records a completion timestamp.
 **Files:** `load.go` (timestamp per sample), `report.go`.
+
+**Done (2026-06-13).** `buildTimeline` (in `report.go`) buckets the measured
+samples by completion time, anchored at the first measured sample. Bucket width
+adapts (`timelineWidth`) so any run is ~12 rows: 1s for smoke runs, up to 1
+minute for hour-long runs. Each bucket carries requests, throughput (items ÷
+width), p50, p99, and errors; the series is `timeline` in the results JSON and a
+"Latency over time" markdown section with a p99 sparkline bar scaled to the
+worst bucket. For sweeps it reflects the knee step (built in `BuildReport`,
+which `BuildSweepReport` calls on the headline result). No `load.go` change was
+needed — samples already record `Completed` (P0 item 3). Verified live: a 10s
+run surfaced the cache fill-in spike (t+0s p99 15.8ms vs steady-state ~8.5ms).
+Unit tests `TestTimelineWidth` and `TestBuildTimeline` cover width selection,
+bucketing, item-based throughput, and the empty case.
 
 ### 17. Optional raw sample export
 

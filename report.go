@@ -45,6 +45,7 @@ type Report struct {
 	Server          *ServerMetrics   `json:"server,omitempty"` // diffed Prometheus view of the measured phase
 	WriteRate       int              `json:"write_rate,omitempty"` // background churn writes/sec; 0 = none
 	WriteChurn      *Stats           `json:"write_churn,omitempty"`
+	Timeline        []TimelineBucket `json:"timeline,omitempty"` // per-bucket p50/p99/throughput over the measured window
 	Sweep           []SweepStep      `json:"sweep,omitempty"`
 	SweepKneeRate   int              `json:"sweep_knee_rate,omitempty"` // highest non-saturated, SLO-passing step; 0 = none
 	SLOP99          string           `json:"slo_p99,omitempty"`
@@ -66,6 +67,79 @@ type Environment struct {
 }
 
 const toolVersion = "0.1.0"
+
+// TimelineBucket aggregates the measured samples that completed within one
+// time slice of the measured window. The series exposes cache fill-in, GC
+// pauses, and gradual degradation that the aggregate percentiles hide.
+type TimelineBucket struct {
+	Offset     string        `json:"offset"`     // human label, e.g. "t+5s"
+	OffsetSec  int           `json:"offset_sec"` // bucket start, seconds from first measured sample
+	Requests   int           `json:"requests"`
+	Throughput float64       `json:"throughput_per_sec"`
+	P50        time.Duration `json:"p50_ns"`
+	P99        time.Duration `json:"p99_ns"`
+	Errors     int           `json:"errors"`
+}
+
+// timelineWidth picks a "nice" bucket width so a run produces roughly a dozen
+// rows regardless of duration: short smoke runs bucket by the second, hour-long
+// runs by the minute.
+func timelineWidth(window time.Duration) time.Duration {
+	if window <= 0 {
+		return time.Second
+	}
+	target := window / 15
+	for _, w := range []time.Duration{time.Second, 2 * time.Second, 5 * time.Second, 10 * time.Second, 15 * time.Second, 30 * time.Second, time.Minute} {
+		if target <= w {
+			return w
+		}
+	}
+	return time.Minute
+}
+
+// buildTimeline buckets measured samples by completion time, anchored at the
+// first measured completion, and summarizes each bucket. The last bucket may
+// cover a partial slice; its throughput is still divided by the full width, so
+// it can read low — acceptable for a trend view.
+func buildTimeline(samples []Sample) []TimelineBucket {
+	if len(samples) == 0 {
+		return nil
+	}
+	anchor, last := samples[0].Completed, samples[0].Completed
+	for _, s := range samples {
+		if s.Completed.Before(anchor) {
+			anchor = s.Completed
+		}
+		if s.Completed.After(last) {
+			last = s.Completed
+		}
+	}
+	width := timelineWidth(last.Sub(anchor))
+	buckets := map[int][]Sample{}
+	maxIdx := 0
+	for _, s := range samples {
+		idx := int(s.Completed.Sub(anchor) / width)
+		buckets[idx] = append(buckets[idx], s)
+		if idx > maxIdx {
+			maxIdx = idx
+		}
+	}
+	out := make([]TimelineBucket, 0, maxIdx+1)
+	for i := 0; i <= maxIdx; i++ {
+		st := Summarize(buckets[i])
+		sec := int((time.Duration(i) * width).Seconds())
+		out = append(out, TimelineBucket{
+			Offset:     fmt.Sprintf("t+%ds", sec),
+			OffsetSec:  sec,
+			Requests:   st.Count,
+			Throughput: float64(st.Items) / width.Seconds(),
+			P50:        st.P50,
+			P99:        st.P99,
+			Errors:     st.Errors,
+		})
+	}
+	return out
+}
 
 // SweepStep is one fixed-rate step of a sweep run.
 type SweepStep struct {
@@ -220,6 +294,7 @@ func BuildReport(res *LoadResult, corpus *Corpus, cfg *Config, tupleCount int, s
 		ws := res.WriteStats
 		r.WriteChurn = &ws
 	}
+	r.Timeline = buildTimeline(res.Samples)
 	return r
 }
 
@@ -393,6 +468,30 @@ func (r *Report) Markdown() string {
 		}
 		w("")
 	}
+	if len(r.Timeline) >= 2 {
+		w("## Latency over time")
+		w("")
+		w("*The measured window sliced into time buckets. Aggregate percentiles hide *when* latency was bad; this catches cache fill-in (early buckets slow, later ones fast), GC pauses or compaction (one bucket spikes), and gradual degradation (p99 trending up). The bar tracks p99 relative to the worst bucket.*")
+		w("")
+		w("| Time | Requests | Throughput/s | p50 | p99 | p99 trend | Errors |")
+		w("|---|---|---|---|---|---|---|")
+		var maxP99 time.Duration
+		for _, tb := range r.Timeline {
+			if tb.P99 > maxP99 {
+				maxP99 = tb.P99
+			}
+		}
+		for _, tb := range r.Timeline {
+			bar := ""
+			if maxP99 > 0 {
+				n := int(float64(tb.P99) / float64(maxP99) * 20)
+				bar = strings.Repeat("█", n)
+			}
+			w("| %s | %d | %.0f | %s | %s | %s | %d |",
+				tb.Offset, tb.Requests, tb.Throughput, ms(tb.P50), ms(tb.P99), bar, tb.Errors)
+		}
+		w("")
+	}
 	w("## Per-relation breakdown")
 	w("")
 	w("*Latency split out by relation. This is the cleanest place to ask \"is one specific relation hot?\" — populations above mix relations of different graph depth, but here every row is a single relation. A relation with much higher p99 than its peers usually means a deeper or denser resolution path; check the model.*")
@@ -490,6 +589,8 @@ func (r *Report) Markdown() string {
 	w("**Population slices.** \"All checks\" is every measured Check or BatchCheck. \"CEL-conditioned paths\" are checks whose resolution can evaluate a CEL condition somewhere in the graph (computed statically from the model — fgaperf doesn't trace per request). \"With contextual tuples\" are checks where `contextual.attach_probability` won and the request carried contextual tuples. \"Background tuple writes\" is the churn rate's Write/Delete latency, only present when `load.write_rate > 0`.")
 	w("")
 	w("**Per-relation table.** \"Requests\" is sample count for that relation in the measured window; \"Errors\" counts failures attributed to checks of that relation. Compare relations of similar graph depth — a deeper relation with higher latency may be entirely expected.")
+	w("")
+	w("**Latency over time.** The measured window split into equal time buckets (the width adapts so any run is ~12 rows). \"Throughput/s\" divides each bucket's completed items by the bucket width. Read it as a trend: early buckets slower than later ones is cache warming; a single bucket spiking is a GC pause or datastore compaction; p99 trending upward across buckets is the server falling behind. The last bucket may be partial and read low.")
 	w("")
 	w("**Rate sweep.** \"DS queries/req\" is the server-reported mean datastore queries per Check at that offered rate; it rises sharply once OpenFGA starts spending most of its time on the database. The knee is the highest offered step that kept up (Achieved ≥ 98%% of Offered) and, if `load.slo_p99` was set, also stayed under that SLO.")
 	w("")
