@@ -519,12 +519,25 @@ run surfaced the cache fill-in spike (t+0s p99 15.8ms vs steady-state ~8.5ms).
 Unit tests `TestTimelineWidth` and `TestBuildTimeline` cover width selection,
 bucketing, item-based throughput, and the empty case.
 
-### 17. Optional raw sample export
+### 17. Optional raw sample export ✅
 
 `load.sample_file: samples.jsonl.gz` dumping per-sample target, latency,
 outcome class, timestamp — for users who want their own analysis. Off by
 default; write from the existing single collector goroutine to keep the hot
 path clean. **Files:** `load.go`, `config.go`.
+
+**Done (2026-06-13).** `load.sample_file` (default unset) streams one
+`SampleRecord` JSON line per measured sample (completion time, target, offered
+rate, service + response latency, items, conditioned/contextual tags, error
+class, mismatch). A `.gz` suffix wraps the stream in gzip. The `sampleWriter` is
+created and closed entirely in RunLoad's single collector goroutine, so the
+request hot path is untouched and no locking is needed; warmup samples are
+already excluded upstream. A sweep's steps share one file via an unexported
+`sampleAppend` flag (RunLoad opens with `O_APPEND` for steps after the first;
+gzip multistream decodes the concatenation transparently). Documented in the
+annotated example config and the configuration reference. Unit test
+`TestSampleWriterGzipRoundTrip` covers the gzip round-trip and append/concat;
+verified end-to-end (20k records, valid JSONL, gzip-decodable).
 
 ### 18. gRPC client option
 

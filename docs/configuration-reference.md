@@ -132,6 +132,7 @@ write churn).
 | `load.consistency` | `MINIMIZE_LATENCY` | `MINIMIZE_LATENCY` (uses caches) or `HIGHER_CONSISTENCY` (skips them). Pick what your production callers use. |
 | `load.verify_results` | `false` (`true` in example) | Compare each load-time response against the probe-time ground truth and count mismatches. |
 | `load.write_rate` | `0` | Background tuple writes per second during the measured phase. Lets you measure checks under realistic cache-invalidation pressure. `0` = read-only. |
+| `load.sample_file` | unset | Dump one JSON line per measured sample (target, latency, response latency, outcome class, timestamp) for your own analysis. A `.gz` suffix gzips the stream; a sweep's steps all append to one file. Off when unset. |
 | `load.sweep.rates` | empty | When set, run a multi-step sweep instead of a single rate. List of offered req/s, e.g. `[200, 500, 1000, 2000]`. Mutually exclusive with `load.rate`. |
 | `load.sweep.step_duration` | `60s` | Measured window per sweep step. Warmup applies once at the start of the sweep, not per step. |
 | `load.slo_p99` | unset | Optional target response-latency p99. A sweep step counts as "passing" only if response p99 stays under this. |

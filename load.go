@@ -7,13 +7,16 @@ package main
 // Warmup samples are discarded.
 
 import (
+	"compress/gzip"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand"
 	"net"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -217,6 +220,81 @@ func (p *corpusPicker) pick(rng *rand.Rand) *CorpusEntry {
 	return &p.entries[g[rng.Intn(len(g))]]
 }
 
+// SampleRecord is one line of the optional raw sample export — enough for a
+// user to redo the latency analysis their own way without re-running the load.
+// Only measured-phase samples are written (warmup is excluded upstream).
+type SampleRecord struct {
+	T             int64  `json:"t_ns"` // completion time, unix nanoseconds
+	Target        string `json:"target"`
+	OfferedRate   int    `json:"offered_rate,omitempty"` // sweep step / fixed rate; 0 = closed loop
+	LatencyNs     int64  `json:"latency_ns"`
+	RespLatencyNs int64  `json:"resp_latency_ns,omitempty"`
+	Items         int    `json:"items"`
+	Conditioned   bool   `json:"conditioned,omitempty"`
+	Contextual    bool   `json:"contextual,omitempty"`
+	Err           bool   `json:"err,omitempty"`
+	ErrClass      string `json:"err_class,omitempty"`
+	Mismatch      bool   `json:"mismatch,omitempty"`
+}
+
+// sampleWriter streams SampleRecords to a JSONL file (gzip-compressed when the
+// path ends in .gz). The single collector goroutine owns it, so no locking is
+// needed and the request hot path is untouched.
+type sampleWriter struct {
+	f   *os.File
+	gz  *gzip.Writer
+	enc *json.Encoder
+}
+
+func newSampleWriter(path string, appendMode bool) (*sampleWriter, error) {
+	flags := os.O_CREATE | os.O_WRONLY
+	if appendMode {
+		flags |= os.O_APPEND
+	} else {
+		flags |= os.O_TRUNC
+	}
+	f, err := os.OpenFile(path, flags, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	sw := &sampleWriter{f: f}
+	var w io.Writer = f
+	if strings.HasSuffix(path, ".gz") {
+		// Appending to a gzip file concatenates streams; gzip readers in
+		// multistream mode (the default) decode them transparently.
+		sw.gz = gzip.NewWriter(f)
+		w = sw.gz
+	}
+	sw.enc = json.NewEncoder(w)
+	return sw, nil
+}
+
+func (w *sampleWriter) write(s Sample, offeredRate int) {
+	w.enc.Encode(&SampleRecord{
+		T:             s.Completed.UnixNano(),
+		Target:        s.Target,
+		OfferedRate:   offeredRate,
+		LatencyNs:     s.Latency.Nanoseconds(),
+		RespLatencyNs: s.RespLatency.Nanoseconds(),
+		Items:         s.Items,
+		Conditioned:   s.Conditioned,
+		Contextual:    s.Contextual,
+		Err:           s.Err,
+		ErrClass:      s.ErrClass,
+		Mismatch:      s.Mismatch,
+	})
+}
+
+func (w *sampleWriter) Close() error {
+	if w.gz != nil {
+		if err := w.gz.Close(); err != nil {
+			w.f.Close()
+			return err
+		}
+	}
+	return w.f.Close()
+}
+
 // classifyErr buckets a request error for reporting. The classes are coarse on
 // purpose; ErrorSamples carries the verbatim strings for diagnosis.
 func classifyErr(err error) string {
@@ -377,6 +455,14 @@ func RunLoad(client *FGAClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 		close(stopRate)
 		close(done)
 	}()
+	var sw *sampleWriter
+	if cfg.Load.SampleFile != "" {
+		var err error
+		sw, err = newSampleWriter(cfg.Load.SampleFile, cfg.Load.sampleAppend)
+		if err != nil {
+			return nil, fmt.Errorf("opening sample_file %q: %w", cfg.Load.SampleFile, err)
+		}
+	}
 	res.ErrorsByClass = map[string]int64{}
 	var firstDone, lastDone time.Time
 	for s := range sampleCh {
@@ -392,7 +478,15 @@ func RunLoad(client *FGAClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 				res.ErrorSamples = append(res.ErrorSamples, s.ErrMsg)
 			}
 		}
+		if sw != nil {
+			sw.write(s, lc.Rate)
+		}
 		res.Samples = append(res.Samples, s)
+	}
+	if sw != nil {
+		if err := sw.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "sample_file: closing %q failed: %v\n", cfg.Load.SampleFile, err)
+		}
 	}
 	<-done
 	<-churnDone // before the after-snapshot so churn writes land inside the server-side diff
@@ -433,6 +527,7 @@ func RunSweep(client *FGAClient, corpus *Corpus, cfg *Config, scraper *MetricsSc
 		stepCfg.Load.Duration = sw.StepDuration
 		if i > 0 {
 			stepCfg.Load.Warmup = 0
+			stepCfg.Load.sampleAppend = true // all steps share one sample_file
 		}
 		fmt.Printf("sweep step %d/%d: offered %d req/s for %s\n", i+1, len(sw.Rates), rate, sw.StepDuration)
 		res, err := RunLoad(client, corpus, &stepCfg, scraper)

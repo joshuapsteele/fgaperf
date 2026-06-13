@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bufio"
+	"compress/gzip"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -99,5 +103,61 @@ func TestSummarizeResponseUsesRespLatency(t *testing.T) {
 	}
 	if resp.Max != 200*time.Millisecond {
 		t.Errorf("response max = %v, want 200ms", resp.Max)
+	}
+}
+
+// The raw sample export must round-trip through gzip, and a second writer in
+// append mode must concatenate (so a sweep's steps share one file).
+func TestSampleWriterGzipRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "samples.jsonl.gz")
+	now := time.Now()
+	sw, err := newSampleWriter(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sw.write(Sample{Target: "document#viewer", Latency: 3 * time.Millisecond, Completed: now, Items: 1, Conditioned: true}, 1000)
+	sw.write(Sample{Target: "document#editor", Latency: 5 * time.Millisecond, Completed: now, Items: 1, Err: true, ErrClass: "5xx"}, 1000)
+	if err := sw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Append a second stream, as a later sweep step would.
+	sw2, err := newSampleWriter(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sw2.write(Sample{Target: "document#viewer", Latency: 4 * time.Millisecond, Completed: now, Items: 1}, 2000)
+	if err := sw2.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	gz, err := gzip.NewReader(f) // multistream by default: reads both appended streams
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recs []SampleRecord
+	sc := bufio.NewScanner(gz)
+	for sc.Scan() {
+		var r SampleRecord
+		if err := json.Unmarshal(sc.Bytes(), &r); err != nil {
+			t.Fatal(err)
+		}
+		recs = append(recs, r)
+	}
+	if len(recs) != 3 {
+		t.Fatalf("got %d records, want 3", len(recs))
+	}
+	if recs[0].Target != "document#viewer" || recs[0].LatencyNs != int64(3*time.Millisecond) || !recs[0].Conditioned || recs[0].OfferedRate != 1000 {
+		t.Errorf("record 0 wrong: %+v", recs[0])
+	}
+	if !recs[1].Err || recs[1].ErrClass != "5xx" {
+		t.Errorf("record 1 should carry the error class: %+v", recs[1])
+	}
+	if recs[2].OfferedRate != 2000 {
+		t.Errorf("appended record should carry the new rate: %+v", recs[2])
 	}
 }

@@ -109,8 +109,14 @@ type LoadConfig struct {
 	BatchSize     int           `yaml:"batch_size"`     // for batch-check
 	VerifyResults bool          `yaml:"verify_results"` // compare allowed against probe expectations
 	WriteRate     int           `yaml:"write_rate"`     // background tuple writes/sec during the measured phase; 0 = none
+	SampleFile    string        `yaml:"sample_file"`    // optional: dump one JSON line per measured sample here (.gz = gzip); "" = off
 	Sweep         SweepConfig   `yaml:"sweep"`
 	SLOP99        time.Duration `yaml:"slo_p99"` // optional: a sweep step "passes" only when response-latency p99 is under this
+
+	// sampleAppend makes RunLoad open SampleFile in append mode instead of
+	// truncating, so a sweep's steps all land in one file. Not a YAML knob;
+	// set by RunSweep per step.
+	sampleAppend bool `yaml:"-"`
 }
 
 // SweepConfig steps through fixed offered rates in one run, reusing the same
