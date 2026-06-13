@@ -133,6 +133,40 @@ func TestBatchCheckMarkdownLabelsBatchBreakdown(t *testing.T) {
 	}
 }
 
+func TestMarkdownSummaryAndHealthySuggestions(t *testing.T) {
+	md := fixedReport().Markdown()
+	for _, want := range []string{
+		"## Summary",
+		"Sustained 4892 checks/sec",
+		"Client-side p99 was 8.00 ms.",
+		"Verified responses had zero mismatches.",
+	} {
+		if !strings.Contains(md, want) {
+			t.Fatalf("summary missing %q", want)
+		}
+	}
+	if strings.Contains(md, "## Suggestions") {
+		t.Fatal("healthy representative report should not render suggestions")
+	}
+}
+
+func TestMarkdownSuggestions(t *testing.T) {
+	r := fixedReport()
+	r.CorpusStats = map[string]CorpusTargetStats{
+		"document#viewer": {Total: 30, Distinct: 10},
+	}
+	r.ResolvedConfig = map[string]any{
+		"probe": map[string]any{"cohort_bias": 0.1},
+	}
+	md := r.Markdown()
+	if !strings.Contains(md, "## Suggestions") {
+		t.Fatal("suggestions section missing")
+	}
+	if !strings.Contains(md, "document#viewer") || !strings.Contains(md, "cohort_bias") {
+		t.Fatalf("suggestions did not name duplication and cohort_bias:\n%s", md)
+	}
+}
+
 // summarizeCounts must summarize list-endpoint result sizes and skip
 // check-style samples (ResultCount < 0) and errored samples.
 func TestSummarizeCounts(t *testing.T) {

@@ -15,46 +15,47 @@ import (
 )
 
 type Report struct {
-	GeneratedAt     time.Time        `json:"generated_at"`
-	ToolVersion     string           `json:"tool_version"`
-	APIURL          string           `json:"api_url"`
-	Endpoint        string           `json:"endpoint"`
-	Consistency     string           `json:"consistency"`
-	Concurrency     int              `json:"concurrency"`
-	OfferedRate     int              `json:"offered_rate"`
-	AchievedRate    float64          `json:"achieved_rate_per_sec,omitempty"` // fixed-rate only: measured requests / measured window
-	DroppedSlots    int64            `json:"dropped_rate_slots,omitempty"`
-	Warmup          string           `json:"warmup"`
-	Duration        string           `json:"duration"`
-	MeasuredWindow  string           `json:"measured_window"` // first to last sample completion
-	TupleCount      int              `json:"tuple_count"`
-	CorpusSize      int              `json:"corpus_size"`
-	CorpusDistinct  int              `json:"corpus_distinct"`
-	TotalChecks     int64            `json:"total_checks_incl_warmup"`
-	Mismatches      int64            `json:"result_mismatches"`
-	Throughput      float64          `json:"throughput_per_sec"`
-	Overall         Stats            `json:"overall"`
-	ResponseLatency *Stats           `json:"response_latency,omitempty"` // fixed-rate only: intended send -> response
-	Conditioned     Stats            `json:"conditioned"`
-	Unconditioned   Stats            `json:"unconditioned"`
-	Contextual      Stats            `json:"contextual"`
-	NoContextual    Stats            `json:"without_contextual"`
-	ByTarget        map[string]Stats `json:"by_target"`
-	ErrorsByClass   map[string]int64 `json:"errors_by_class,omitempty"`
-	ErrorSamples    []string         `json:"error_samples,omitempty"`
-	Server          *ServerMetrics   `json:"server,omitempty"`     // diffed Prometheus view of the measured phase
-	WriteRate       int              `json:"write_rate,omitempty"` // background churn writes/sec; 0 = none
-	WriteChurn      *Stats           `json:"write_churn,omitempty"`
-	ResultCounts    *CountStats      `json:"result_counts,omitempty"` // list-objects/list-users: distribution of returned-set sizes
-	Timeline        []TimelineBucket `json:"timeline,omitempty"`      // per-bucket p50/p99/throughput over the measured window
-	Sweep           []SweepStep      `json:"sweep,omitempty"`
-	SweepKneeRate   int              `json:"sweep_knee_rate,omitempty"` // highest non-saturated, SLO-passing step; 0 = none
-	SLOP99          string           `json:"slo_p99,omitempty"`
-	SeedDuration    string           `json:"seed_duration,omitempty"`
-	SeedRate        float64          `json:"seed_tuples_per_sec,omitempty"`
-	Environment     Environment      `json:"environment"`
-	ResolvedConfig  map[string]any   `json:"resolved_config,omitempty"` // post-defaults config, credentials redacted
-	MismatchFile    string           `json:"mismatch_file,omitempty"`   // written by Save when mismatches occurred
+	GeneratedAt     time.Time                    `json:"generated_at"`
+	ToolVersion     string                       `json:"tool_version"`
+	APIURL          string                       `json:"api_url"`
+	Endpoint        string                       `json:"endpoint"`
+	Consistency     string                       `json:"consistency"`
+	Concurrency     int                          `json:"concurrency"`
+	OfferedRate     int                          `json:"offered_rate"`
+	AchievedRate    float64                      `json:"achieved_rate_per_sec,omitempty"` // fixed-rate only: measured requests / measured window
+	DroppedSlots    int64                        `json:"dropped_rate_slots,omitempty"`
+	Warmup          string                       `json:"warmup"`
+	Duration        string                       `json:"duration"`
+	MeasuredWindow  string                       `json:"measured_window"` // first to last sample completion
+	TupleCount      int                          `json:"tuple_count"`
+	CorpusSize      int                          `json:"corpus_size"`
+	CorpusDistinct  int                          `json:"corpus_distinct"`
+	CorpusStats     map[string]CorpusTargetStats `json:"corpus_target_stats,omitempty"`
+	TotalChecks     int64                        `json:"total_checks_incl_warmup"`
+	Mismatches      int64                        `json:"result_mismatches"`
+	Throughput      float64                      `json:"throughput_per_sec"`
+	Overall         Stats                        `json:"overall"`
+	ResponseLatency *Stats                       `json:"response_latency,omitempty"` // fixed-rate only: intended send -> response
+	Conditioned     Stats                        `json:"conditioned"`
+	Unconditioned   Stats                        `json:"unconditioned"`
+	Contextual      Stats                        `json:"contextual"`
+	NoContextual    Stats                        `json:"without_contextual"`
+	ByTarget        map[string]Stats             `json:"by_target"`
+	ErrorsByClass   map[string]int64             `json:"errors_by_class,omitempty"`
+	ErrorSamples    []string                     `json:"error_samples,omitempty"`
+	Server          *ServerMetrics               `json:"server,omitempty"`     // diffed Prometheus view of the measured phase
+	WriteRate       int                          `json:"write_rate,omitempty"` // background churn writes/sec; 0 = none
+	WriteChurn      *Stats                       `json:"write_churn,omitempty"`
+	ResultCounts    *CountStats                  `json:"result_counts,omitempty"` // list-objects/list-users: distribution of returned-set sizes
+	Timeline        []TimelineBucket             `json:"timeline,omitempty"`      // per-bucket p50/p99/throughput over the measured window
+	Sweep           []SweepStep                  `json:"sweep,omitempty"`
+	SweepKneeRate   int                          `json:"sweep_knee_rate,omitempty"` // highest non-saturated, SLO-passing step; 0 = none
+	SLOP99          string                       `json:"slo_p99,omitempty"`
+	SeedDuration    string                       `json:"seed_duration,omitempty"`
+	SeedRate        float64                      `json:"seed_tuples_per_sec,omitempty"`
+	Environment     Environment                  `json:"environment"`
+	ResolvedConfig  map[string]any               `json:"resolved_config,omitempty"` // post-defaults config, credentials redacted
+	MismatchFile    string                       `json:"mismatch_file,omitempty"`   // written by Save when mismatches occurred
 
 	mismatchRecords []MismatchRecord // written to MismatchFile by Save
 }
@@ -280,6 +281,7 @@ func BuildReport(res *LoadResult, corpus *Corpus, cfg *Config, tupleCount int, s
 		TupleCount:     tupleCount,
 		CorpusSize:     len(corpus.Entries),
 		CorpusDistinct: corpus.Distinct(),
+		CorpusStats:    corpus.Stats,
 		TotalChecks:    res.TotalChecks,
 		Mismatches:     res.Mismatches,
 		ByTarget:       map[string]Stats{},
@@ -420,6 +422,20 @@ func (r *Report) Markdown() string {
 	w("| Check corpus | %d entries (%d distinct checks) |", r.CorpusSize, r.CorpusDistinct)
 	w("| Client | %s, %d CPU |", r.Environment.OS+"/"+r.Environment.Arch, r.Environment.CPUs)
 	w("")
+	w("## Summary")
+	w("")
+	w("%s", r.summary())
+	w("")
+	if suggestions := r.suggestions(); len(suggestions) > 0 {
+		w("## Suggestions")
+		w("")
+		w("*Conservative next-run ideas based on common benchmarking traps. Treat them as prompts, not prescriptions.*")
+		w("")
+		for _, s := range suggestions {
+			w("- %s", s)
+		}
+		w("")
+	}
 	w("## Headline results")
 	w("")
 	w("*Throughput and latency over the measured window. The Population column slices the same set of requests different ways: \"All checks\" is everything; the CEL/contextual rows split out paths that touched a CEL condition or carried request-scoped tuples. Compare populations of similar graph depth for a clean read.*")
@@ -718,4 +734,87 @@ func mismatchSentence(n int64) string {
 		return "All verified responses matched probe-time expectations."
 	}
 	return fmt.Sprintf("%d responses differed from probe-time expectations (investigate cache staleness or consistency settings).", n)
+}
+
+func (r *Report) summary() string {
+	var parts []string
+	if len(r.Sweep) > 0 {
+		if r.SweepKneeRate > 0 {
+			parts = append(parts, fmt.Sprintf("Rate sweep found a sustained knee at %d req/s.", r.SweepKneeRate))
+		} else {
+			parts = append(parts, "Rate sweep saturated at every offered rate.")
+		}
+	} else {
+		parts = append(parts, fmt.Sprintf("Sustained %.0f %s/sec over %s.", r.Throughput, endpointNoun(r.Endpoint), r.MeasuredWindow))
+	}
+	parts = append(parts, fmt.Sprintf("Client-side p99 was %s ms.", ms(r.Overall.P99)))
+	if r.Server != nil && r.Server.DatastoreQueryCount.Count > 0 {
+		parts = append(parts, fmt.Sprintf("OpenFGA reported %.2f datastore queries/request.", r.Server.DatastoreQueryCount.Mean))
+	}
+	if r.Mismatches == 0 {
+		parts = append(parts, "Verified responses had zero mismatches.")
+	} else {
+		parts = append(parts, fmt.Sprintf("Verified responses had %d mismatches.", r.Mismatches))
+	}
+	if r.Overall.Errors > 0 {
+		parts = append(parts, fmt.Sprintf("%d measured requests errored.", r.Overall.Errors))
+	}
+	if r.OfferedRate > 0 && r.AchievedRate < 0.98*float64(r.OfferedRate) {
+		parts = append(parts, fmt.Sprintf("The server did not keep up with the %d req/s offered rate.", r.OfferedRate))
+	}
+	if r.WriteRate > 0 {
+		parts = append(parts, fmt.Sprintf("Background churn ran at %d writes/sec.", r.WriteRate))
+	}
+	return strings.Join(parts, " ")
+}
+
+func (r *Report) suggestions() []string {
+	var out []string
+	for target, st := range r.CorpusStats {
+		if st.Distinct > 0 && st.Total > 2*st.Distinct {
+			out = append(out, fmt.Sprintf("Target `%s` has %.1fx corpus duplication; consider raising `probe.samples_per_target` or using `probe.allowed_ratio: -1` to keep its natural mix.", target, float64(st.Total)/float64(st.Distinct)))
+		}
+	}
+	if len(r.Sweep) == 0 && r.OfferedRate > 0 && r.AchievedRate < 0.98*float64(r.OfferedRate) {
+		out = append(out, fmt.Sprintf("This fixed-rate run saturated at %.0f/%d req/s; consider a sweep across rates below %d to find the knee cleanly.", r.AchievedRate, r.OfferedRate, r.OfferedRate))
+	}
+	if r.Mismatches > 0 && r.Consistency == "MINIMIZE_LATENCY" && r.WriteRate > 0 {
+		out = append(out, "`MINIMIZE_LATENCY` plus write churn can legitimately show stale reads; if fresh reads matter, rerun with `load.consistency: HIGHER_CONSISTENCY`.")
+	}
+	if r.Server != nil && r.Server.RequestDuration.P99 > 0 {
+		clientP99 := float64(r.Overall.P99) / float64(time.Millisecond)
+		serverP99 := r.Server.RequestDuration.P99
+		if clientP99 > 5 && clientP99 > 3*serverP99 {
+			out = append(out, fmt.Sprintf("Client p99 (%.2f ms) is much higher than server-side p99 (%.2f ms); check client/server co-location, network latency, and JSON/HTTP overhead.", clientP99, serverP99))
+		}
+	}
+	if v, ok := resolvedFloat(r.ResolvedConfig, "probe", "cohort_bias"); ok && v < 0.5 {
+		out = append(out, "`probe.cohort_bias` is below 0.5; on models with intersections or tuple-to-userset paths, consider raising it so the corpus includes representative allowed checks.")
+	}
+	return out
+}
+
+func resolvedFloat(m map[string]any, path ...string) (float64, bool) {
+	var cur any = m
+	for _, p := range path {
+		mm, ok := cur.(map[string]any)
+		if !ok {
+			return 0, false
+		}
+		cur, ok = mm[p]
+		if !ok {
+			return 0, false
+		}
+	}
+	switch v := cur.(type) {
+	case float64:
+		return v, true
+	case int:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case uint64:
+		return float64(v), true
+	}
+	return 0, false
 }

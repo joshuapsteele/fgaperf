@@ -704,6 +704,13 @@ glossary, annotated `examples/config.yaml`, `docs/configuration-reference.md`,
 findings-doc inline explainers, footer legend, and expanded `inspect` legend
 already landed (2026-06-13); the items below are the next layer.
 
+**Status: items 23–35 done (2026-06-13).** Implemented live terminal progress,
+`doctor`, actionable errors, expanded plan/validate, generated findings
+summaries and suggestions, terminal color, onboarding docs, per-command help,
+badges, troubleshooting docs, and `inspect --json`. Verified with `gofmt`,
+`go test ./...`, `go vet ./...`, and CLI smoke checks listed in the final
+session notes. Per-item notes below.
+
 ### 23. Live progress during probe and load phases
 
 **Motivation.** After the header line, `probe` and `run` are silent for
@@ -728,6 +735,12 @@ window.
 **Accept.** A `fgaperf all` run with no terminal output flag continuously
 prints progress lines; a `fgaperf all 2>/dev/null | cat` run produces only
 the existing summary lines.
+
+**Done (2026-06-13).** Probe classification now runs a terminal-only progress
+line (`probe: N/M checks | current T | allowed/denied A/D | ETA ...`) and the
+load collector runs a terminal-only warmup/measured heartbeat with throughput,
+p99, and errors. Both reuse `isTerminal(os.Stderr)` and clear their carriage
+return line on completion, so redirected stderr stays quiet.
 
 ### 24. `fgaperf doctor` / pre-flight checks
 
@@ -758,6 +771,13 @@ a pass/fail line per check with an actionable hint on each fail:
 -d`" message and exits non-zero; with the stack running, every check
 passes.
 
+**Done (2026-06-13).** Added `fgaperf doctor`, which checks model parsing,
+config/model compatibility, API reachability, temp store create/delete, model
+write, and required Prometheus metric families when configured. Connection
+failures reuse the new localhost hint (`docker compose up -d`, `docker compose
+ps`). `setup`/`run`/`all` also wrap connection failures with the same
+pre-flight hint.
+
 ### 25. Actionable error wrapping
 
 **Motivation.** Today's errors are technically accurate but
@@ -784,6 +804,12 @@ checking. Each unfriendly error is a stall.
 
 **Accept.** Each of the five error classes above produces a message naming
 the suspected cause and the command to verify or fix it.
+
+**Done (2026-06-13).** Config parsing now rewrites YAML unknown-field failures
+with the bad key, line number, and nearest YAML-key suggestion. Runtime errors
+gain hints for stale state/store 404s, connection refused/timeouts, 401/403
+auth mismatches, and missing/unparseable model files with the `fga model
+transform` command.
 
 ### 26. `fgaperf plan` — server-free dry run
 
@@ -818,6 +844,11 @@ report whose tuple-count totals match what an actual `setup` would seed;
 running it on a config whose `probe.targets` includes a relation with no
 assignable subjects prints a warning naming the target.
 
+**Done (2026-06-13).** `plan` now prints the redacted resolved config,
+per-type instances, per-relation tuple estimates, probe budget, load time
+budget, and warnings for probe targets with no reachable direct tuple path.
+Added `fgaperf validate` as the validation/resolved-config-only alias.
+
 ### 27. Findings TL;DR headline line
 
 **Motivation.** The findings doc is dense. A reader who just wants the
@@ -837,6 +868,11 @@ filled with the headline numbers already in `Report`.
 **Accept.** Every findings doc starts with a one-paragraph summary; the
 example findings doc gains a summary that names throughput, p99, and the
 zero-mismatch result.
+
+**Done (2026-06-13).** Findings now include a generated `## Summary` after the
+configuration table. It names sweep knee or sustained throughput, client p99,
+server datastore queries/request when available, mismatch count, errors,
+saturation, and write churn when relevant.
 
 ### 28. "What you might change" hints in findings
 
@@ -873,6 +909,12 @@ section iterates the registered rules. Easy to extend later.
 (healthy run); a deliberately broken config (cohort_bias 0.1, intersection
 target) produces a Suggestions section naming cohort_bias.
 
+**Done (2026-06-13).** Added a conservative generated `## Suggestions` section
+that renders only when a rule fires: per-target corpus duplication >2x,
+fixed-rate saturation, churn + `MINIMIZE_LATENCY` mismatches, client p99 far
+above server-side p99, or `probe.cohort_bias < 0.5`. Healthy example-style
+runs stay quiet.
+
 ### 29. ANSI color and bold on isatty stdout/stderr
 
 **Motivation.** Pure polish, but disproportionate. Headline numbers in
@@ -894,6 +936,11 @@ like a hobby tool" into "this feels supported".
 **Accept.** `fgaperf all | cat` produces output with no ANSI escapes;
 running it directly in a terminal shows bold headline numbers and a
 red error if the server is unreachable.
+
+**Done (2026-06-13).** Added a tiny terminal-style helper that no-ops when
+stdout/stderr is not a TTY or `NO_COLOR` is set. Applied bold labels to
+terminal summaries, yellow warnings to probe/config hints, red failures, and
+colored doctor statuses. Findings markdown remains plain.
 
 ### 30. `docs/getting-started.md` — narrative walkthrough
 
@@ -920,6 +967,10 @@ Link from the README's Quick Start.
 clone reaches a successful smoke run and a comparison without consulting
 the README reference once.
 
+**Done (2026-06-13).** Added `docs/getting-started.md` with a linear path:
+doctor, inspect, smoke run, reading findings, one tuning loop, and compare.
+Linked it from Quick Start.
+
 ### 31. `docs/recipes.md` — short configuration recipes
 
 **Motivation.** Most users come in with a specific question, not a desire
@@ -942,6 +993,11 @@ Cross-link to relevant configuration-reference sections.
 
 **Accept.** Each recipe runs as-is against the bundled compose stack and
 produces a non-trivial findings doc (zero mismatches, populated tables).
+
+**Done (2026-06-13).** Added `docs/recipes.md` covering sweep/knee, cache
+impact, model-version comparison, write churn, hot-relation weighting,
+reproducibility with `random_seed`/samples, and server upgrades, with links
+back to the configuration reference and methodology.
 
 ### 32. Per-subcommand `--help` with examples
 
@@ -971,6 +1027,10 @@ Examples worth writing into help text:
 including a worked example; `fgaperf -h` lists every subcommand with its
 one-line summary.
 
+**Done (2026-06-13).** Added root and per-subcommand help text with summaries,
+details, worked examples, and gotchas. `fgaperf -h` lists all commands, and
+`fgaperf <cmd> -h` prints command-specific help.
+
 ### 33. README status badges
 
 **Motivation.** Quick visual signal that the project is alive and
@@ -984,6 +1044,9 @@ URLs only; no external trackers.
 
 **Accept.** README renders with three badges above the intro paragraph;
 the CI badge reflects `main`'s actual state.
+
+**Done (2026-06-13).** README now shows CI, Apache-2.0 license, and Go version
+badges above the intro paragraph.
 
 ### 34. `docs/troubleshooting.md` — common failure modes
 
@@ -1010,6 +1073,10 @@ Each links to the relevant configuration-reference section.
 README links to the doc from a new "If something goes wrong" line near
 Quick Start.
 
+**Done (2026-06-13).** Added `docs/troubleshooting.md` for OpenFGA
+reachability, stale store state, empty/all-denied corpora, mismatches under
+churn, and production-number drift. README Quick Start links to it.
+
 ### 35. `fgaperf inspect --json`
 
 **Motivation.** Today `inspect` prints a terminal-formatted summary;
@@ -1030,6 +1097,11 @@ schema (this is now an API surface for downstream tools).
 **Accept.** `fgaperf inspect --json -config examples/config.yaml | jq
 '.relations[] | select(.tags | contains(["CEL"])) | .key'` lists the
 CEL-reachable relations.
+
+**Done (2026-06-13).** Added `inspect -json`/`inspect --json` with a stable
+projection: schema version, types, subject types, relations with
+`assignable`/`CEL`/`contextual` tags and direct refs, plus condition parameter
+splits.
 
 ---
 

@@ -1,0 +1,169 @@
+package main
+
+import (
+	"flag"
+	"fmt"
+	"io"
+	"sort"
+	"strings"
+)
+
+type commandDoc struct {
+	Summary string
+	Details string
+	Flags   []string
+	Example string
+	Gotcha  string
+}
+
+var commandDocs = map[string]commandDoc{
+	"inspect": {
+		Summary: "print the model analysis; no server needed",
+		Details: "Loads the configured compiled model JSON, validates model-named config keys, and prints every relation with tags for assignable, CEL-reachable, and contextual paths.",
+		Flags:   []string{"config", "json"},
+		Example: "./fgaperf inspect -config examples/config.yaml\n./fgaperf inspect -config examples/config.yaml -json",
+	},
+	"plan": {
+		Summary: "preview generated graph size and load budget; no server needed",
+		Details: "Prints the resolved config, per-type instance counts, estimated tuple counts, probe budget, load duration, and warnings for likely-empty probe targets.",
+		Flags:   []string{"config"},
+		Example: "./fgaperf plan -config examples/config.yaml",
+	},
+	"validate": {
+		Summary: "validate config and print the redacted resolved config; no server needed",
+		Details: "Runs strict YAML/config validation plus model-name validation, then prints the post-defaults config that results will embed.",
+		Flags:   []string{"config"},
+		Example: "./fgaperf validate -config examples/config.yaml",
+	},
+	"doctor": {
+		Summary: "run pre-flight checks against OpenFGA and optional metrics",
+		Details: "Checks model parsing, config/model compatibility, HTTP reachability, temporary store create/delete, model write, and metrics families when metrics.prometheus_url is set.",
+		Flags:   []string{"config"},
+		Example: "./fgaperf doctor -config examples/config.yaml",
+		Gotcha:  "With the bundled stack stopped, run `docker compose up -d` and then `docker compose ps`.",
+	},
+	"setup": {
+		Summary: "create a store, write the model, and seed tuples",
+		Details: "Generates the deterministic tuple graph, creates a fresh store, writes the model, seeds tuples, and writes the state file used by probe/run.",
+		Flags:   []string{"config", "resume"},
+		Example: "./fgaperf setup -config examples/config.yaml\n./fgaperf setup -config examples/config.yaml -resume",
+		Gotcha:  "Writes `.fgaperf-state.json`; re-running without -resume creates a fresh store.",
+	},
+	"probe": {
+		Summary: "build corpus.json from probe-time ground truth",
+		Details: "Requires setup to have run. Samples configured targets, checks each candidate once with HIGHER_CONSISTENCY, then writes the replay corpus.",
+		Flags:   []string{"config"},
+		Example: "./fgaperf probe -config examples/config.yaml",
+		Gotcha:  "Reads model + state, writes `corpus.json`; rerun after changing seed/probe config.",
+	},
+	"run": {
+		Summary: "replay corpus under load and write results",
+		Details: "Requires setup and probe. Replays corpus.json using the configured endpoint, concurrency, rate/sweep, warmup, duration, and consistency.",
+		Flags:   []string{"config", "duration", "warmup", "rate", "concurrency", "endpoint", "consistency", "output-dir"},
+		Example: "./fgaperf run -config examples/config.yaml -duration 30s\n./fgaperf run -config examples/config.yaml -rate 1000 -duration 1m",
+		Gotcha:  "`load.rate` and `load.sweep.rates` are mutually exclusive.",
+	},
+	"all": {
+		Summary: "setup, probe, run, and cleanup in one command",
+		Details: "The usual one-shot workflow. Creates a fresh store, builds a corpus, runs load, writes results, and deletes the store unless -keep or keep_store is set.",
+		Flags:   []string{"config", "keep", "duration", "warmup", "rate", "concurrency", "endpoint", "consistency", "output-dir"},
+		Example: "./fgaperf all -config examples/config.yaml -warmup 2s -duration 8s",
+		Gotcha:  "Use -keep when you want to rerun probe/run against the same seeded store.",
+	},
+	"cleanup": {
+		Summary: "delete the recorded store, or all stores with the configured name",
+		Details: "Deletes the store recorded in the state file. With -all-stores, lists stores and deletes every store whose name matches openfga.store_name.",
+		Flags:   []string{"config", "all-stores"},
+		Example: "./fgaperf cleanup -config examples/config.yaml\n./fgaperf cleanup -config examples/config.yaml -all-stores",
+		Gotcha:  "`-all-stores` deletes by name, not by ID; use it when the state file is gone.",
+	},
+	"compare": {
+		Summary: "render two results JSON files side by side",
+		Details: "Writes a Markdown comparison with overall/per-relation deltas, server-side deltas, config differences, and comparability caveats.",
+		Flags:   []string{"config", "output-dir"},
+		Example: "./fgaperf compare -config examples/config.yaml results/results-A.json results/results-B.json",
+	},
+	"gen-config": {
+		Summary: "emit an annotated starter config from a compiled model",
+		Details: "Reads a compiled model JSON directly and writes a commented config to stdout or -o.",
+		Flags:   []string{"model", "o", "force"},
+		Example: "./fgaperf gen-config -model model.json > config.yaml\n./fgaperf gen-config -model model.json -o config.yaml -force",
+		Gotcha:  "Use `fga model transform --file model.fga > model.json` when starting from DSL.",
+	},
+}
+
+func printRootHelp(w io.Writer) {
+	fmt.Fprintln(w, "fgaperf: model-driven performance testing for OpenFGA")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "Usage:")
+	fmt.Fprintln(w, "  fgaperf <command> [flags]")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "Commands:")
+	names := make([]string, 0, len(commandDocs))
+	for name := range commandDocs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		fmt.Fprintf(w, "  %-10s %s\n", name, commandDocs[name].Summary)
+	}
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "Run `fgaperf <command> -h` for command-specific flags and examples.")
+}
+
+func printCommandHelp(w io.Writer, cmd string, fs *flag.FlagSet) {
+	doc, ok := commandDocs[cmd]
+	if !ok {
+		fmt.Fprintf(w, "usage: fgaperf %s [flags]\n", cmd)
+		fs.PrintDefaults()
+		return
+	}
+	fmt.Fprintf(w, "fgaperf %s: %s\n\n", cmd, doc.Summary)
+	if doc.Details != "" {
+		fmt.Fprintln(w, wrapHelp(doc.Details))
+		fmt.Fprintln(w, "")
+	}
+	fmt.Fprintln(w, "Usage:")
+	if cmd == "compare" {
+		fmt.Fprintln(w, "  fgaperf compare [flags] <results-a.json> <results-b.json>")
+	} else {
+		fmt.Fprintf(w, "  fgaperf %s [flags]\n", cmd)
+	}
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "Flags:")
+	printSelectedFlags(w, fs, doc.Flags)
+	if doc.Example != "" {
+		fmt.Fprintln(w, "")
+		fmt.Fprintln(w, "Examples:")
+		for _, line := range strings.Split(doc.Example, "\n") {
+			fmt.Fprintf(w, "  %s\n", line)
+		}
+	}
+	if doc.Gotcha != "" {
+		fmt.Fprintln(w, "")
+		fmt.Fprintf(w, "Gotcha: %s\n", doc.Gotcha)
+	}
+}
+
+func wrapHelp(s string) string {
+	return s
+}
+
+func printSelectedFlags(w io.Writer, fs *flag.FlagSet, names []string) {
+	if len(names) == 0 {
+		fs.SetOutput(w)
+		fs.PrintDefaults()
+		return
+	}
+	for _, name := range names {
+		f := fs.Lookup(name)
+		if f == nil {
+			continue
+		}
+		def := ""
+		if f.DefValue != "" && f.DefValue != "0" && f.DefValue != "false" {
+			def = fmt.Sprintf(" (default %q)", f.DefValue)
+		}
+		fmt.Fprintf(w, "  -%s%s\n    \t%s\n", f.Name, def, f.Usage)
+	}
+}

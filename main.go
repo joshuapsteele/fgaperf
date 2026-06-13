@@ -64,9 +64,14 @@ func validateStateCorpus(st *State, corpus *Corpus) error {
 
 func main() {
 	if len(os.Args) < 2 {
-		fail("usage: fgaperf <setup|probe|run|all|inspect|plan|cleanup|compare|gen-config> [-config config.yaml]")
+		printRootHelp(os.Stderr)
+		os.Exit(1)
 	}
 	cmd := os.Args[1]
+	if cmd == "-h" || cmd == "--help" || cmd == "help" {
+		printRootHelp(os.Stdout)
+		return
+	}
 	// gen-config is the one command that takes neither -config nor a loaded
 	// model from the configured path; it operates directly on a model file
 	// and writes annotated YAML to stdout (or -o path). Handled inline so the
@@ -75,11 +80,17 @@ func main() {
 		runGenConfig(os.Args[2:])
 		return
 	}
+	if _, ok := commandDocs[cmd]; !ok {
+		printRootHelp(os.Stderr)
+		fail("unknown command %q", cmd)
+	}
 	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
+	fs.Usage = func() { printCommandHelp(os.Stdout, cmd, fs) }
 	cfgPath := fs.String("config", "config.yaml", "path to config file (optional; defaults apply)")
 	keep := fs.Bool("keep", false, "all: keep the store and state file instead of deleting them")
 	allStores := fs.Bool("all-stores", false, "cleanup: delete every store whose name matches openfga.store_name")
 	resume := fs.Bool("resume", false, "setup: resume an interrupted seed recorded in the state file")
+	inspectJSON := fs.Bool("json", false, "inspect: print model analysis as JSON")
 	// Common load knobs as flags so a quick run doesn't need a config edit (or
 	// the sed dance the README used to recommend). Only flags actually passed
 	// override the config; defaults here are inert sentinels.
@@ -98,7 +109,9 @@ func main() {
 		cfgFile = ""
 	}
 	cfg, err := LoadConfigFile(cfgFile)
-	check(err)
+	if err != nil {
+		fail("%v", err)
+	}
 
 	var ov Overrides
 	fs.Visit(func(f *flag.Flag) {
@@ -123,13 +136,18 @@ func main() {
 		fail("invalid flag override: %v", err)
 	}
 
+	if cmd == "doctor" {
+		checkWithConfig(doctor(cfg), cfg)
+		return
+	}
+
 	// run and cleanup operate on an existing store and never read the model.
 	var analysis *Analysis
 	switch cmd {
-	case "inspect", "setup", "probe", "all", "plan":
+	case "inspect", "setup", "probe", "all", "plan", "validate":
 		analysis, err = LoadModel(cfg.ModelFile)
 		if err != nil {
-			fail("%v\nfgaperf needs a compiled OpenFGA authorization model; set model_file in the config (see examples/)", err)
+			fail("%s", modelLoadError(cfg.ModelFile, err))
 		}
 		if err := cfg.validateAgainstModel(analysis); err != nil {
 			fail("invalid config: %v", err)
@@ -140,28 +158,36 @@ func main() {
 
 	switch cmd {
 	case "inspect":
-		inspect(analysis, cfg)
+		if *inspectJSON {
+			check(json.NewEncoder(os.Stdout).Encode(inspectProjection(analysis, cfg)))
+		} else {
+			inspect(analysis, cfg)
+		}
 	case "plan":
 		plan(analysis, cfg)
+	case "validate":
+		validateOnly(analysis, cfg)
 	case "setup":
 		_, err := setup(client, analysis, cfg, *resume)
-		check(err)
+		checkWithConfig(err, cfg)
 	case "probe":
-		st := loadState(cfg)
-		check(probe(client, analysis, cfg, st))
+		st, err := loadState(cfg)
+		checkWithConfig(err, cfg)
+		checkWithConfig(probe(client, analysis, cfg, st), cfg)
 	case "run":
-		st := loadState(cfg)
-		check(run(client, cfg, st))
+		st, err := loadState(cfg)
+		checkWithConfig(err, cfg)
+		checkWithConfig(run(client, cfg, st), cfg)
 	case "all":
-		check(runAll(client, analysis, cfg, *keep || cfg.KeepStore))
+		checkWithConfig(runAll(client, analysis, cfg, *keep || cfg.KeepStore), cfg)
 	case "cleanup":
-		check(cleanup(client, cfg, *allStores))
+		checkWithConfig(cleanup(client, cfg, *allStores), cfg)
 	case "compare":
 		args := fs.Args()
 		if len(args) != 2 {
 			fail("usage: fgaperf compare <results-a.json> <results-b.json>")
 		}
-		check(compare(args[0], args[1], cfg.OutputDir))
+		checkWithConfig(compare(args[0], args[1], cfg.OutputDir), cfg)
 	default:
 		fail("unknown command %q", cmd)
 	}
@@ -382,8 +408,8 @@ func probe(client *FGAClient, a *Analysis, cfg *Config, st *State) error {
 	for _, target := range sortedKeys(corpus.Stats) {
 		st := corpus.Stats[target]
 		if st.Distinct*2 < st.Total { // more than 2x average duplication is worth a look
-			fmt.Fprintf(os.Stderr, "probe: target %s corpus is %d entries but only %d distinct checks (%.1fx duplication); cache hit rates under load will be inflated\n",
-				target, st.Total, st.Distinct, float64(st.Total)/float64(st.Distinct))
+			fmt.Fprintln(os.Stderr, yellowErr(fmt.Sprintf("probe: target %s corpus is %d entries but only %d distinct checks (%.1fx duplication); cache hit rates under load will be inflated",
+				target, st.Total, st.Distinct, float64(st.Total)/float64(st.Distinct))))
 		}
 	}
 	return corpus.Save(cfg.CorpusFile)
@@ -427,24 +453,24 @@ func run(client *FGAClient, cfg *Config, st *State) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("throughput: %.0f %s/sec | p50 %sms p95 %sms p99 %sms | errors %d | mismatches %d\n",
-		report.Throughput, endpointNoun(cfg.Load.Endpoint), ms(report.Overall.P50), ms(report.Overall.P95), ms(report.Overall.P99),
+	fmt.Printf("%s %.0f %s/sec | p50 %sms p95 %sms p99 %sms | errors %d | mismatches %d\n",
+		boldOut("throughput:"), report.Throughput, endpointNoun(cfg.Load.Endpoint), ms(report.Overall.P50), ms(report.Overall.P95), ms(report.Overall.P99),
 		report.Overall.Errors, report.Mismatches)
 	if report.ResultCounts != nil {
-		fmt.Printf("result-set size: mean %.1f | p50 %d | p99 %d | max %d\n",
-			report.ResultCounts.Mean, report.ResultCounts.P50, report.ResultCounts.P99, report.ResultCounts.Max)
+		fmt.Printf("%s mean %.1f | p50 %d | p99 %d | max %d\n",
+			boldOut("result-set size:"), report.ResultCounts.Mean, report.ResultCounts.P50, report.ResultCounts.P99, report.ResultCounts.Max)
 	}
 	if report.OfferedRate > 0 {
-		fmt.Printf("achieved rate: %.0f req/s of %d offered (%d slots dropped) | response-latency p99 %sms\n",
-			report.AchievedRate, report.OfferedRate, report.DroppedSlots, ms(report.ResponseLatency.P99))
+		fmt.Printf("%s %.0f req/s of %d offered (%d slots dropped) | response-latency p99 %sms\n",
+			boldOut("achieved rate:"), report.AchievedRate, report.OfferedRate, report.DroppedSlots, ms(report.ResponseLatency.P99))
 	}
 	if report.WriteChurn != nil {
-		fmt.Printf("churn: %d writes/sec offered | %d write/delete calls | write p99 %sms | errors %d\n",
-			report.WriteRate, report.WriteChurn.Count+report.WriteChurn.Errors, ms(report.WriteChurn.P99), report.WriteChurn.Errors)
+		fmt.Printf("%s %d writes/sec offered | %d write/delete calls | write p99 %sms | errors %d\n",
+			boldOut("churn:"), report.WriteRate, report.WriteChurn.Count+report.WriteChurn.Errors, ms(report.WriteChurn.P99), report.WriteChurn.Errors)
 	}
 	if report.Server != nil && report.Server.DatastoreQueryCount.Count > 0 {
-		fmt.Printf("server: %.2f datastore queries/request | server-side p99 %.2fms\n",
-			report.Server.DatastoreQueryCount.Mean, report.Server.RequestDuration.P99)
+		fmt.Printf("%s %.2f datastore queries/request | server-side p99 %.2fms\n",
+			boldOut("server:"), report.Server.DatastoreQueryCount.Mean, report.Server.RequestDuration.P99)
 	}
 	fmt.Printf("wrote %s and %s\n", jsonPath, mdPath)
 	return nil
@@ -459,12 +485,16 @@ func sortedKeys[V any](m map[string]V) []string {
 	return out
 }
 
-func loadState(cfg *Config) *State {
+func loadState(cfg *Config) (*State, error) {
 	data, err := os.ReadFile(cfg.StateFile)
-	check(err)
+	if err != nil {
+		return nil, fmt.Errorf("reading state file %s (run `fgaperf setup` first, or `fgaperf all` for the full workflow): %w", cfg.StateFile, err)
+	}
 	var st State
-	check(json.Unmarshal(data, &st))
-	return &st
+	if err := json.Unmarshal(data, &st); err != nil {
+		return nil, fmt.Errorf("parsing state file %s: %w", cfg.StateFile, err)
+	}
+	return &st, nil
 }
 
 func check(err error) {
@@ -473,13 +503,20 @@ func check(err error) {
 	}
 }
 
+func checkWithConfig(err error, cfg *Config) {
+	if err != nil {
+		fail("%s", friendlyError(err, cfg))
+	}
+}
+
 func fail(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, format+"\n", args...)
+	fmt.Fprintln(os.Stderr, redErr(fmt.Sprintf(format, args...)))
 	os.Exit(1)
 }
 
 func runGenConfig(args []string) {
 	fs := flag.NewFlagSet("gen-config", flag.ExitOnError)
+	fs.Usage = func() { printCommandHelp(os.Stdout, "gen-config", fs) }
 	modelPath := fs.String("model", "", "path to compiled OpenFGA model JSON (required)")
 	outPath := fs.String("o", "", "path to write generated YAML (defaults to stdout)")
 	force := fs.Bool("force", false, "overwrite -o path if it already exists")
@@ -489,7 +526,7 @@ func runGenConfig(args []string) {
 	}
 	a, err := LoadModel(*modelPath)
 	if err != nil {
-		fail("%v", err)
+		fail("%s", modelLoadError(*modelPath, err))
 	}
 	var w io.Writer = os.Stdout
 	if *outPath != "" {

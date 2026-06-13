@@ -208,12 +208,21 @@ func BuildCorpus(client *FGAClient, a *Analysis, w *World, cfg *Config, storeID,
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, cfg.Probe.Concurrency)
 	errs := make([]error, len(candidates))
+	progress := newProbeProgress(len(candidates))
+	stopProgress := make(chan struct{})
+	progressDone := make(chan struct{})
+	if progress != nil {
+		go progress.run(stopProgress, progressDone)
+	} else {
+		close(progressDone)
+	}
 	for i := range candidates {
 		wg.Add(1)
 		sem <- struct{}{}
 		go func(i int) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			progress.setCurrent(candidates[i].Target)
 			allowed, err := client.Check(storeID, CheckRequest{
 				TupleKey: CheckTupleKey{
 					User:     candidates[i].User,
@@ -227,12 +236,16 @@ func BuildCorpus(client *FGAClient, a *Analysis, w *World, cfg *Config, storeID,
 			})
 			if err != nil {
 				errs[i] = err
+				progress.add(false, false)
 				return
 			}
 			candidates[i].Expected = allowed
+			progress.add(allowed, true)
 		}(i)
 	}
 	wg.Wait()
+	close(stopProgress)
+	<-progressDone
 
 	var valid []CorpusEntry
 	var errCount int
@@ -395,8 +408,8 @@ func resample(entries []CorpusEntry, ratio, maxDup float64, rng *rand.Rand) []Co
 			}
 		}
 		if len(allowed) == 0 || len(denied) == 0 {
-			fmt.Fprintf(os.Stderr, "probe: target %s has only %s outcomes (allowed=%d denied=%d); keeping natural mix\n",
-				target, map[bool]string{true: "allowed", false: "denied"}[len(allowed) > 0], len(allowed), len(denied))
+			fmt.Fprintln(os.Stderr, yellowErr(fmt.Sprintf("probe: target %s has only %s outcomes (allowed=%d denied=%d); keeping natural mix",
+				target, map[bool]string{true: "allowed", false: "denied"}[len(allowed) > 0], len(allowed), len(denied))))
 			out = append(out, group...)
 			continue
 		}
@@ -404,8 +417,8 @@ func resample(entries []CorpusEntry, ratio, maxDup float64, rng *rand.Rand) []Co
 		wantAllowed := int(float64(n) * ratio)
 		wantDenied := n - wantAllowed
 		if maxDup > 0 && (float64(wantAllowed) > maxDup*float64(len(allowed)) || float64(wantDenied) > maxDup*float64(len(denied))) {
-			fmt.Fprintf(os.Stderr, "probe: target %s would need >%.0fx duplication to reach allowed_ratio %.2f (natural mix: allowed=%d denied=%d); keeping natural mix\n",
-				target, maxDup, ratio, len(allowed), len(denied))
+			fmt.Fprintln(os.Stderr, yellowErr(fmt.Sprintf("probe: target %s would need >%.0fx duplication to reach allowed_ratio %.2f (natural mix: allowed=%d denied=%d); keeping natural mix",
+				target, maxDup, ratio, len(allowed), len(denied))))
 			out = append(out, group...)
 			continue
 		}

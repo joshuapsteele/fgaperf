@@ -9,6 +9,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
+	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // planInstanceCounts returns the per-type instance count the seeder would
@@ -75,9 +79,22 @@ func plan(a *Analysis, cfg *Config) {
 	planReport(a, cfg, os.Stdout)
 }
 
+func validateOnly(a *Analysis, cfg *Config) {
+	validateReport(a, cfg, os.Stdout)
+}
+
+func validateReport(a *Analysis, cfg *Config, w io.Writer) {
+	fmt.Fprintf(w, "config valid for %s (no server contacted)\n\n", cfg.ModelFile)
+	writeResolvedConfig(w, cfg)
+	for _, warning := range planWarnings(a, cfg) {
+		fmt.Fprintf(w, "warning: %s\n", warning)
+	}
+}
+
 // planReport writes the plan to w (split out so it is testable).
 func planReport(a *Analysis, cfg *Config, w io.Writer) {
 	fmt.Fprintf(w, "plan for %s (no server contacted)\n\n", cfg.ModelFile)
+	writeResolvedConfig(w, cfg)
 
 	inst := planInstanceCounts(a, cfg)
 	fmt.Fprintf(w, "instances per type (%d cohorts):\n", cfg.Seed.Cohorts)
@@ -107,10 +124,119 @@ func planReport(a *Analysis, cfg *Config, w io.Writer) {
 	probeBudget *= cfg.Probe.Samples
 	fmt.Fprintf(w, "\nprobe will execute up to %d candidate checks (%d targets x %d samples_per_target).\n",
 		probeBudget, probeBudget/maxInt(cfg.Probe.Samples, 1), cfg.Probe.Samples)
+	fmt.Fprintf(w, "final corpus will contain up to %d entries before allowed/denied resampling; scarce outcomes may be duplicated or kept at their natural mix.\n",
+		probeBudget)
+	loadDur := cfg.Load.Warmup + cfg.Load.Duration
+	if len(cfg.Load.Sweep.Rates) > 0 {
+		loadDur = cfg.Load.Warmup + timeMul(cfg.Load.Sweep.StepDuration, len(cfg.Load.Sweep.Rates))
+	}
+	fmt.Fprintf(w, "load phase time budget: %s (warmup plus measured windows; excludes setup/probe/server time).\n", loadDur)
+
+	warnings := planWarnings(a, cfg)
+	if len(warnings) > 0 {
+		fmt.Fprintln(w, "\nwarnings:")
+		for _, warning := range warnings {
+			fmt.Fprintf(w, "  - %s\n", warning)
+		}
+	}
 
 	fmt.Fprintln(w, "\nNote: tuple counts are an upper bound — actual seeding de-duplicates,")
 	fmt.Fprintln(w, "skips empty cohorts, and limits self-referential relations to lower-index")
 	fmt.Fprintln(w, "subjects, so the real total is usually lower. Run `fgaperf setup` to seed.")
+}
+
+func writeResolvedConfig(w io.Writer, cfg *Config) {
+	fmt.Fprintln(w, "resolved config (credentials redacted):")
+	data, err := yaml.Marshal(cfg.Resolved())
+	if err != nil {
+		fmt.Fprintf(w, "  <unavailable: %v>\n\n", err)
+		return
+	}
+	for _, line := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
+		fmt.Fprintf(w, "  %s\n", line)
+	}
+	fmt.Fprintln(w, "")
+}
+
+func planWarnings(a *Analysis, cfg *Config) []string {
+	targets := cfg.Probe.Targets
+	if len(targets) == 0 {
+		for _, tr := range a.AllRelations {
+			targets = append(targets, TargetSpec{Relation: tr.Key(), Weight: 1})
+		}
+	}
+	var warnings []string
+	if len(a.SubjectTypes) == 0 && len(cfg.Probe.SubjectTypes) == 0 {
+		warnings = append(warnings, "no terminal subject types were inferred; set probe.subject_types explicitly")
+	}
+	for _, t := range targets {
+		typ, rel, ok := strings.Cut(t.Relation, "#")
+		if !ok {
+			continue
+		}
+		if !relationHasAssignablePath(a, typ, rel, map[string]bool{}) {
+			warnings = append(warnings, fmt.Sprintf("probe target %s has no reachable direct tuple path; probe is likely to produce only denied or empty entries", t.Relation))
+		}
+	}
+	return warnings
+}
+
+func relationHasAssignablePath(a *Analysis, typ, rel string, seen map[string]bool) bool {
+	key := typ + "#" + rel
+	if seen[key] {
+		return false
+	}
+	seen[key] = true
+	if len(a.DirectRefs[typ][rel]) > 0 {
+		return true
+	}
+	td := a.TypeDefs[typ]
+	if td == nil {
+		return false
+	}
+	us, ok := td.Relations[rel]
+	if !ok {
+		return false
+	}
+	return usersetHasAssignablePath(a, typ, &us, seen)
+}
+
+func usersetHasAssignablePath(a *Analysis, typ string, us *Userset, seen map[string]bool) bool {
+	switch {
+	case us.This != nil:
+		return false
+	case us.ComputedUserset != nil:
+		return relationHasAssignablePath(a, typ, us.ComputedUserset.Relation, seen)
+	case us.TupleToUserset != nil:
+		if relationHasAssignablePath(a, typ, us.TupleToUserset.Tupleset.Relation, seen) {
+			return true
+		}
+		for _, ref := range a.DirectRefs[typ][us.TupleToUserset.Tupleset.Relation] {
+			if relationHasAssignablePath(a, ref.Type, us.TupleToUserset.ComputedUserset.Relation, seen) {
+				return true
+			}
+		}
+	case us.Union != nil:
+		for i := range us.Union.Child {
+			if usersetHasAssignablePath(a, typ, &us.Union.Child[i], seen) {
+				return true
+			}
+		}
+	case us.Intersection != nil:
+		for i := range us.Intersection.Child {
+			if usersetHasAssignablePath(a, typ, &us.Intersection.Child[i], seen) {
+				return true
+			}
+		}
+	case us.Difference != nil:
+		return usersetHasAssignablePath(a, typ, &us.Difference.Base, seen) ||
+			usersetHasAssignablePath(a, typ, &us.Difference.Subtract, seen)
+	}
+	return false
+}
+
+func timeMul(d time.Duration, n int) time.Duration {
+	return d * time.Duration(n)
 }
 
 func maxInt(a, b int) int {

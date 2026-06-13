@@ -108,3 +108,34 @@ func TestTupleContextParamsExplicitEmptyOverride(t *testing.T) {
 		t.Errorf("request-side: got %v, want every parameter on the request", requestSide)
 	}
 }
+
+func TestInspectProjection(t *testing.T) {
+	a := loadExampleModel(t)
+	cfg, err := LoadConfigFile("examples/config.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := inspectProjection(a, cfg)
+	if p.SchemaVersion == "" || len(p.Relations) == 0 {
+		t.Fatalf("projection missing basics: %+v", p)
+	}
+	var viewer *InspectRelation
+	for i := range p.Relations {
+		if p.Relations[i].Key == "document#viewer" {
+			viewer = &p.Relations[i]
+			break
+		}
+	}
+	if viewer == nil {
+		t.Fatal("document#viewer missing from projection")
+	}
+	if !contains(viewer.Tags, "CEL") || !contains(viewer.Tags, "assignable") {
+		t.Fatalf("document#viewer tags = %v, want CEL and assignable", viewer.Tags)
+	}
+	if len(p.Conditions) == 0 || p.Conditions[0].Name != "has_scope" {
+		t.Fatalf("condition projection missing: %+v", p.Conditions)
+	}
+	if !reflect.DeepEqual(p.Conditions[0].TupleSideParams, []string{"granted_scopes"}) {
+		t.Fatalf("tuple-side params = %v", p.Conditions[0].TupleSideParams)
+	}
+}

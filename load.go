@@ -390,6 +390,14 @@ func RunLoad(client *FGAClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 	start := time.Now()
 	warmupEnd := start.Add(lc.Warmup)
 	deadline := start.Add(lc.Warmup + lc.Duration)
+	progress := newLoadProgress(start, warmupEnd, deadline)
+	stopProgress := make(chan struct{})
+	progressDone := make(chan struct{})
+	if progress != nil {
+		go progress.run(stopProgress, progressDone)
+	} else {
+		close(progressDone)
+	}
 
 	beforeSnap := make(chan *snapshot, 1)
 	if scraper != nil {
@@ -520,6 +528,7 @@ func RunLoad(client *FGAClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 	var firstDone, lastDone time.Time
 	var writeErr error
 	for s := range sampleCh {
+		progress.add(s)
 		if firstDone.IsZero() || s.Completed.Before(firstDone) {
 			firstDone = s.Completed
 		}
@@ -541,6 +550,8 @@ func RunLoad(client *FGAClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 		}
 		res.Samples = append(res.Samples, s)
 	}
+	close(stopProgress)
+	<-progressDone
 	if sw != nil {
 		if err := sw.Close(); err != nil {
 			if writeErr == nil {

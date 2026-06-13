@@ -19,6 +19,10 @@ New to these terms? Jump to the [How to read this](#how-to-read-this) section at
 | Check corpus | 1000 entries (666 distinct checks) |
 | Client | linux/amd64, 8 CPU |
 
+## Summary
+
+Sustained 4892 checks/sec over 1m0.012s. Client-side p99 was 8.00 ms. OpenFGA reported 9.70 datastore queries/request. Verified responses had zero mismatches.
+
 ## Headline results
 
 *Throughput and latency over the measured window. The Population column slices the same set of requests different ways: "All checks" is everything; the CEL/contextual rows split out paths that touched a CEL condition or carried request-scoped tuples. Compare populations of similar graph depth for a clean read.*

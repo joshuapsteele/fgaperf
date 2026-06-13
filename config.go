@@ -233,7 +233,7 @@ func LoadConfigFile(path string) (*Config, error) {
 		dec := yaml.NewDecoder(bytes.NewReader(raw))
 		dec.KnownFields(true)
 		if err := dec.Decode(cfg); err != nil && !errors.Is(err, io.EOF) {
-			return nil, fmt.Errorf("parsing config: %w", err)
+			return nil, configDecodeError(path, raw, err)
 		}
 	}
 	cfg.applyDefaults(fields)

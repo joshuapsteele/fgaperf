@@ -1,5 +1,9 @@
 # fgaperf
 
+[![CI](https://img.shields.io/github/actions/workflow/status/joshuapsteele/fgaperf/ci.yaml?branch=main&label=CI)](https://github.com/joshuapsteele/fgaperf/actions/workflows/ci.yaml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Go](https://img.shields.io/badge/go-1.26.4-00ADD8.svg)](go.mod)
+
 Model-driven performance testing for [OpenFGA](https://openfga.dev/docs/fga).
 
 Point fgaperf at a compiled OpenFGA [authorization model](https://openfga.dev/docs/concepts#what-is-an-authorization-model)
@@ -44,6 +48,9 @@ docker info
 
 ## Quick Start
 
+Want the narrated path instead of the reference? Start with
+[docs/getting-started.md](docs/getting-started.md).
+
 Start the local Postgres-backed OpenFGA stack:
 
 ```bash
@@ -86,7 +93,10 @@ example, sweep a single rate point against the example store:
 ## Commands
 
 ```bash
+./fgaperf doctor  -config examples/config.yaml   # pre-flight OpenFGA + metrics checks
+./fgaperf validate -config examples/config.yaml  # print resolved config, no server needed
 ./fgaperf inspect -config examples/config.yaml   # print model analysis, no server needed
+./fgaperf inspect -config examples/config.yaml -json
 ./fgaperf plan    -config examples/config.yaml   # preview seeded tuple counts, no server needed
 ./fgaperf setup   -config examples/config.yaml   # create store, write model, seed tuples
 ./fgaperf probe   -config examples/config.yaml   # build corpus.json
@@ -105,6 +115,16 @@ re-run load against the same seeded store (for example, re-running `run` with
 a different `load.rate` against the corpus the `probe` phase already built).
 Set `keep_store: true` or pass `-keep` if you do not want `all` to delete the
 store at the end.
+
+Every command has a worked example in its help text:
+
+```bash
+./fgaperf run -h
+```
+
+If something goes wrong, [docs/troubleshooting.md](docs/troubleshooting.md)
+walks through the common first-week failures. For common tuning questions, see
+[docs/recipes.md](docs/recipes.md).
 
 `compare` takes two results JSON files and writes a `compare-<stamp>.md` that
 tables the latency and server-side deltas, names every config key that

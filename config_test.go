@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -103,6 +104,13 @@ func TestConfigRejectsUnknownKeys(t *testing.T) {
 	}
 	if _, err := LoadConfigFile(path); err == nil {
 		t.Fatal("config with unknown key alowed_ratio loaded without error")
+	} else {
+		msg := err.Error()
+		if !strings.Contains(msg, "unknown field `alowed_ratio`") ||
+			!strings.Contains(msg, "line 2") ||
+			!strings.Contains(msg, "did you mean `allowed_ratio`") {
+			t.Fatalf("unknown-key error was not actionable: %v", err)
+		}
 	}
 }
 
