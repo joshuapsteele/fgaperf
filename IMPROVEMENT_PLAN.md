@@ -711,7 +711,7 @@ badges, troubleshooting docs, and `inspect --json`. Verified with `gofmt`,
 `go test ./...`, `go vet ./...`, and CLI smoke checks listed in the final
 session notes. Per-item notes below.
 
-### 23. Live progress during probe and load phases
+### 23. Live progress during probe and load phases ✅
 
 **Motivation.** After the header line, `probe` and `run` are silent for
 seconds to minutes. A first-time user can't tell the difference between
@@ -742,7 +742,7 @@ load collector runs a terminal-only warmup/measured heartbeat with throughput,
 p99, and errors. Both reuse `isTerminal(os.Stderr)` and clear their carriage
 return line on completion, so redirected stderr stays quiet.
 
-### 24. `fgaperf doctor` / pre-flight checks
+### 24. `fgaperf doctor` / pre-flight checks ✅
 
 **Motivation.** New users hit the same handful of failure modes before they
 ever get to a measurement: OpenFGA not running, wrong port, no permissions to
@@ -778,7 +778,7 @@ failures reuse the new localhost hint (`docker compose up -d`, `docker compose
 ps`). `setup`/`run`/`all` also wrap connection failures with the same
 pre-flight hint.
 
-### 25. Actionable error wrapping
+### 25. Actionable error wrapping ✅
 
 **Motivation.** Today's errors are technically accurate but
 unhelpful-on-the-first-read. "store not found" doesn't tell a user the state
@@ -811,7 +811,7 @@ gain hints for stale state/store 404s, connection refused/timeouts, 401/403
 auth mismatches, and missing/unparseable model files with the `fga model
 transform` command.
 
-### 26. `fgaperf plan` — server-free dry run
+### 26. `fgaperf plan` — server-free dry run ✅
 
 **Motivation.** Users iterate on their config blind: they tweak fanout,
 cohorts, or probe targets and have to spin up a full run (or do mental math
@@ -849,7 +849,7 @@ per-type instances, per-relation tuple estimates, probe budget, load time
 budget, and warnings for probe targets with no reachable direct tuple path.
 Added `fgaperf validate` as the validation/resolved-config-only alias.
 
-### 27. Findings TL;DR headline line
+### 27. Findings TL;DR headline line ✅
 
 **Motivation.** The findings doc is dense. A reader who just wants the
 upshot — to paste into a Slack message or compare to last week's run —
@@ -874,7 +874,7 @@ configuration table. It names sweep knee or sustained throughput, client p99,
 server datastore queries/request when available, mismatch count, errors,
 saturation, and write churn when relevant.
 
-### 28. "What you might change" hints in findings
+### 28. "What you might change" hints in findings ✅
 
 **Motivation.** The findings doc reports what happened; it doesn't suggest
 what to do about it. The most common failure of a first run isn't the
@@ -915,7 +915,7 @@ fixed-rate saturation, churn + `MINIMIZE_LATENCY` mismatches, client p99 far
 above server-side p99, or `probe.cohort_bias < 0.5`. Healthy example-style
 runs stay quiet.
 
-### 29. ANSI color and bold on isatty stdout/stderr
+### 29. ANSI color and bold on isatty stdout/stderr ✅
 
 **Motivation.** Pure polish, but disproportionate. Headline numbers in
 bold, errors in red, warnings in yellow, and the most common new-user
@@ -942,7 +942,7 @@ stdout/stderr is not a TTY or `NO_COLOR` is set. Applied bold labels to
 terminal summaries, yellow warnings to probe/config hints, red failures, and
 colored doctor statuses. Findings markdown remains plain.
 
-### 30. `docs/getting-started.md` — narrative walkthrough
+### 30. `docs/getting-started.md` — narrative walkthrough ✅
 
 **Motivation.** The README is reference-shaped. A reader who is new to
 OpenFGA, has a model, and just wants to know "what do I do next" needs a
@@ -971,7 +971,7 @@ the README reference once.
 doctor, inspect, smoke run, reading findings, one tuning loop, and compare.
 Linked it from Quick Start.
 
-### 31. `docs/recipes.md` — short configuration recipes
+### 31. `docs/recipes.md` — short configuration recipes ✅
 
 **Motivation.** Most users come in with a specific question, not a desire
 to learn the whole tool. A recipe page indexes the tool by question.
@@ -999,7 +999,7 @@ impact, model-version comparison, write churn, hot-relation weighting,
 reproducibility with `random_seed`/samples, and server upgrades, with links
 back to the configuration reference and methodology.
 
-### 32. Per-subcommand `--help` with examples
+### 32. Per-subcommand `--help` with examples ✅
 
 **Motivation.** `fgaperf` with no args prints a one-line usage. Each
 subcommand should print its purpose, flags, one worked example, and the
@@ -1031,7 +1031,7 @@ one-line summary.
 details, worked examples, and gotchas. `fgaperf -h` lists all commands, and
 `fgaperf <cmd> -h` prints command-specific help.
 
-### 33. README status badges
+### 33. README status badges ✅
 
 **Motivation.** Quick visual signal that the project is alive and
 configured. Costs nothing to add.
@@ -1048,7 +1048,7 @@ the CI badge reflects `main`'s actual state.
 **Done (2026-06-13).** README now shows CI, Apache-2.0 license, and Go version
 badges above the intro paragraph.
 
-### 34. `docs/troubleshooting.md` — common failure modes
+### 34. `docs/troubleshooting.md` — common failure modes ✅
 
 **Motivation.** Even with item 25 (actionable errors), users will hit
 multi-step problems that need a paragraph, not a one-line hint. Five
@@ -1077,7 +1077,7 @@ Quick Start.
 reachability, stale store state, empty/all-denied corpora, mismatches under
 churn, and production-number drift. README Quick Start links to it.
 
-### 35. `fgaperf inspect --json`
+### 35. `fgaperf inspect --json` ✅
 
 **Motivation.** Today `inspect` prints a terminal-formatted summary;
 users with their own tooling have to re-parse the model JSON from
