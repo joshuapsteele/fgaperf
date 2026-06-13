@@ -83,6 +83,9 @@ sed -e 's/warmup: 10s/warmup: 2s/' -e 's/duration: 60s/duration: 8s/' \
 ./fgaperf run     -config examples/config.yaml   # run load, write results/
 ./fgaperf cleanup -config examples/config.yaml   # delete the recorded store
 
+# generate an annotated starter config from a compiled model:
+./fgaperf gen-config -model model.json > config.yaml
+
 # diff two runs (latency deltas, server-side deltas, config differences):
 ./fgaperf compare -config examples/config.yaml results/results-A.json results/results-B.json
 ```
@@ -108,7 +111,7 @@ with:
 fga model transform --file model.fga > model.json
 ```
 
-Then create a config with at least:
+Then either create a config with at least:
 
 ```yaml
 model_file: model.json
@@ -116,6 +119,19 @@ model_file: model.json
 openfga:
   api_url: http://localhost:8080
 ```
+
+or scaffold a starting point straight from the model (every section is
+annotated; instance counts, fanouts, contextual guesses, and conditions/pools
+blocks are picked from the model's shape):
+
+```bash
+./fgaperf gen-config -model model.json > config.yaml
+```
+
+`gen-config` writes to stdout by default; pass `-o config.yaml` to write to a
+file (refuses to clobber unless `-force` is given). The output is a starting
+point — review the contextual guesses, condition pools, and probe target list,
+then tune cohorts/instances/fanout to the scale of the system you're modeling.
 
 Run:
 

@@ -9,11 +9,13 @@ package main
 //	fgaperf inspect -config config.yaml print the model analysis and exit
 //	fgaperf cleanup -config config.yaml delete the store recorded in the state file
 //	fgaperf compare a.json b.json       render two results files side by side
+//	fgaperf gen-config -model model.json  emit a starter config.yaml on stdout
 
 import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"sort"
@@ -31,9 +33,17 @@ type State struct {
 
 func main() {
 	if len(os.Args) < 2 {
-		fail("usage: fgaperf <setup|probe|run|all|inspect|cleanup|compare> [-config config.yaml]")
+		fail("usage: fgaperf <setup|probe|run|all|inspect|cleanup|compare|gen-config> [-config config.yaml]")
 	}
 	cmd := os.Args[1]
+	// gen-config is the one command that takes neither -config nor a loaded
+	// model from the configured path; it operates directly on a model file
+	// and writes annotated YAML to stdout (or -o path). Handled inline so the
+	// shared flag block below doesn't need to learn its quirks.
+	if cmd == "gen-config" {
+		runGenConfig(os.Args[2:])
+		return
+	}
 	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 	cfgPath := fs.String("config", "config.yaml", "path to config file (optional; defaults apply)")
 	keep := fs.Bool("keep", false, "all: keep the store and state file instead of deleting them")
@@ -353,4 +363,37 @@ func check(err error) {
 func fail(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, format+"\n", args...)
 	os.Exit(1)
+}
+
+func runGenConfig(args []string) {
+	fs := flag.NewFlagSet("gen-config", flag.ExitOnError)
+	modelPath := fs.String("model", "", "path to compiled OpenFGA model JSON (required)")
+	outPath := fs.String("o", "", "path to write generated YAML (defaults to stdout)")
+	force := fs.Bool("force", false, "overwrite -o path if it already exists")
+	fs.Parse(args)
+	if *modelPath == "" {
+		fail("gen-config: -model is required\n\nusage: fgaperf gen-config -model model.json [-o config.yaml] [-force]")
+	}
+	a, err := LoadModel(*modelPath)
+	if err != nil {
+		fail("%v", err)
+	}
+	var w io.Writer = os.Stdout
+	if *outPath != "" {
+		if _, err := os.Stat(*outPath); err == nil && !*force {
+			fail("gen-config: %s already exists (pass -force to overwrite)", *outPath)
+		}
+		f, err := os.Create(*outPath)
+		if err != nil {
+			fail("%v", err)
+		}
+		defer f.Close()
+		w = f
+	}
+	if err := generateConfig(*modelPath, a, w); err != nil {
+		fail("%v", err)
+	}
+	if *outPath != "" {
+		fmt.Fprintf(os.Stderr, "wrote %s\n", *outPath)
+	}
 }

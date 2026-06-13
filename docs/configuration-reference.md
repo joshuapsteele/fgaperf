@@ -9,6 +9,12 @@ starting point — copy it, point `model_file` at your model, and tune from
 there. Every field has a default; the minimum viable config is a `model_file`
 path and an `openfga.api_url`.
 
+For your own model, `fgaperf gen-config -model your-model.json > config.yaml`
+emits an annotated starter with instance counts, fanout overrides, contextual
+guesses, conditions, and pools picked from the model's shape. Treat the
+output as a starting point rather than a final answer — the size and traffic
+mix knobs still need tuning for your workload.
+
 Configs are validated strictly. Unknown keys, out-of-range numbers, and
 references to model objects that don't exist all fail fast with an error
 naming the bad key.
