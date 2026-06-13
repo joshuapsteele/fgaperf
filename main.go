@@ -169,8 +169,19 @@ func inspect(a *Analysis, cfg *Config) {
 	fmt.Printf("model: %d types, %d relations, %d conditions\n",
 		len(a.Types), len(a.AllRelations), len(a.Model.Conditions))
 	fmt.Printf("inferred subject types: %v\n", a.SubjectTypes)
+	fmt.Println("  (subject types are the leaf user types Check questions resolve down to —")
+	fmt.Println("   probe samples its `user` from these unless you set probe.subject_types)")
 	contextual := contextualSet(cfg)
-	fmt.Println("\nrelations (— = unconditioned, CEL = condition reachable):")
+	fmt.Println("")
+	fmt.Println("relations:")
+	fmt.Println("  tag legend:")
+	fmt.Println("    —             this relation has no CEL condition on any path")
+	fmt.Println("    CEL           at least one resolution path can evaluate a CEL condition")
+	fmt.Println("    [assignable]  accepts direct tuples (you can Write `<obj>#<rel>@<user>`)")
+	fmt.Println("    [contextual]  fgaperf will send this relation's tuples on each Check")
+	fmt.Println("                  request (configured via contextual.relations) instead of")
+	fmt.Println("                  persisting them during setup")
+	fmt.Println("")
 	for _, tr := range a.AllRelations {
 		tag := "—"
 		if a.Conditioned[tr.Key()] {
@@ -185,10 +196,19 @@ func inspect(a *Analysis, cfg *Config) {
 		}
 		fmt.Printf("  %-4s %s%s\n", tag, tr.Key(), direct)
 	}
-	fmt.Println("\nconditions:")
-	for name, c := range a.Model.Conditions {
-		ts, rs := a.TupleContextParams(name, cfg)
-		fmt.Printf("  %s: %q  tuple-side params: %v  request-side params: %v\n", name, c.Expression, ts, rs)
+	if len(a.Model.Conditions) > 0 {
+		fmt.Println("")
+		fmt.Println("conditions:")
+		fmt.Println("  tuple-side params live on the stored tuple (e.g. \"granted_scopes\");")
+		fmt.Println("  request-side params are sent by Check at evaluation time (e.g. \"required_scope\").")
+		fmt.Println("  Override the split with the `conditions` block in your config.")
+		fmt.Println("")
+		for name, c := range a.Model.Conditions {
+			ts, rs := a.TupleContextParams(name, cfg)
+			fmt.Printf("  %s: %q\n", name, c.Expression)
+			fmt.Printf("    tuple-side params:   %v\n", ts)
+			fmt.Printf("    request-side params: %v\n", rs)
+		}
 	}
 }
 

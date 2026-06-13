@@ -2,6 +2,10 @@
 # examples/model.json. Every field is optional; built-in defaults produce a
 # working run for any compiled model. Durations use Go syntax (30s, 5m).
 #
+# See README.md (Glossary) and docs/configuration-reference.md for term
+# definitions and a per-field reference. Comments here cover the everyday
+# questions: what does this knob do, what are valid values, when do I touch it.
+#
 # The example model exercises every feature the tool measures: direct tuples,
 # usersets (group#member), tuple-to-userset (parent folders), a recursive
 # relation (folder#parent), an intersection (document#can_share requires the
@@ -10,93 +14,258 @@
 # a document when the request carries a matching scope).
 
 openfga:
+  # OpenFGA HTTP API URL. The bundled docker-compose.yaml publishes :8080.
+  # Use http://host.docker.internal:8080 if you run fgaperf inside a container
+  # that needs to reach the host's OpenFGA.
   api_url: http://localhost:8080
+
+  # Name used when creating a fresh store for each run. The actual store ID
+  # is recorded in .fgaperf-state.json; multiple runs can share a name and
+  # `fgaperf cleanup -all-stores` deletes every store with this name.
   store_name: fgaperf-example
-  # api_token: <pre-shared key, if OPENFGA_AUTHN_METHOD=preshared>
+
+  # Pre-shared API token, if OpenFGA was started with
+  # OPENFGA_AUTHN_METHOD=preshared. Leave unset for the docker-compose stack.
+  # api_token: <secret>
+
+  # Per-request HTTP timeout. Long checks against a slow datastore can exceed
+  # the default; raise this before assuming the server is broken.
   timeout: 10s
 
+# Compiled model JSON. Export from a .fga file with `fga model transform`.
+# See README.md "Using Your Own Model" for the full procedure.
 model_file: examples/model.json
+
+# Where results-<stamp>.json and findings-<stamp>.md are written.
 output_dir: results
 
-random_seed: 42 # fixed seed makes tuple generation reproducible across runs
+# Fixed seed makes tuple generation, probing, and request ordering
+# reproducible across runs. Change the seed to confirm results are stable;
+# repeat a value to reproduce a specific run.
+random_seed: 42
 
-# keep_store: true   # skip the automatic store deletion at the end of `all`
+# Uncomment to keep the store (and .fgaperf-state.json) after `fgaperf all`
+# completes. Useful when you want to re-run `probe`/`run` against the same
+# seeded data.
+# keep_store: true
 
+# ---------------------------------------------------------------------------
+# seed: shape and size of the generated tuple graph
+# ---------------------------------------------------------------------------
 seed:
-  cohorts: 5 # think of a cohort as a tenant; tuples link within cohorts
+  # Number of tenant-like partitions. Tuples are biased to link within the
+  # same cohort, so intersection and tuple-to-userset relations resolve to
+  # "allowed" often enough to measure. Set roughly to the number of tenants
+  # you want to simulate; 1 means a single global tenant.
+  cohorts: 5
+
+  # Default instance count for any type not listed in `instances` below.
   default_instances: 25
+
+  # Per-type instance counts. Larger = more realistic graph, slower setup,
+  # and bigger memory footprint while probing. Document-style apps usually
+  # want many users and documents, fewer groups and folders.
   instances:
     user: 250
     group: 25
     folder: 50
     document: 150
-  default_fanout: 2 # tuples per (object, relation, allowed user type)
-  fanout:
-    group#member: 8
-    folder#parent: 1 # folder nesting; links only point "downward", so no cycles
-    document#parent: 1
-    # A `@usertype` suffix overrides fanout for just that user type of the
-    # relation (the bare key stays the default for the others), e.g.:
-    # document#editor@user: 0          # no direct editors...
-    # document#editor@group#member: 4  # ...4 editor groups per document
-  batch_size: 100 # max tuples per Write call (server default cap)
-  writers: 8
-  wildcard_probability: 0.5 # chance each document gets a conditioned `user:*` viewer tuple
-  # wildcard_probabilities:  # per-relation overrides of the scalar above
-  #   document#viewer: 0.1
 
-# These relations are not written during setup. Probe records them on the
-# corpus entry, and load sends them on each Check/BatchCheck request as
-# `contextual_tuples`. With 50% attachment, document#can_share includes both
-# allowed and denied paths through its contextual intersection gate.
+  # Default fanout: tuples written per (object, relation, allowed user type).
+  # Fanout 2 on document#viewer means each document gets 2 viewer tuples per
+  # accepted user type. Higher fanout = denser graph = more allowed checks
+  # and longer eval paths.
+  default_fanout: 2
+
+  # Per-relation fanout overrides, keyed "type#relation" or
+  # "type#relation@usertype". The bare key applies to every accepted user
+  # type; the @usertype suffix targets just that one (the bare key remains
+  # the default for the others).
+  fanout:
+    group#member: 8       # 8 members per group — typical team size
+    folder#parent: 1      # folder nesting links downward only (no cycles)
+    document#parent: 1    # each document has one parent folder
+    # Per-user-type examples (uncomment to use):
+    # document#editor@user: 0          # no direct user editors...
+    # document#editor@group#member: 4  # ...4 editor groups per document
+
+  # Max tuples per Write API call. 100 is the OpenFGA server default cap;
+  # raise only if your server is configured for larger batches.
+  batch_size: 100
+
+  # Concurrent Write workers during seeding. Raise to seed faster on a beefy
+  # datastore; lower if you see write-side contention or 5xx errors during
+  # the seed phase.
+  writers: 8
+
+  # Probability each object gets a wildcard (e.g. `user:*`) tuple where the
+  # model allows one. 0.5 means roughly half of documents are "public" via a
+  # conditioned wildcard. The example model uses this to exercise a
+  # CEL-conditioned `user:*` viewer.
+  wildcard_probability: 0.5
+
+  # Per-relation overrides of the wildcard probability above.
+  # wildcard_probabilities:
+  #   document#viewer: 0.1   # only 10% of documents are public
+
+# ---------------------------------------------------------------------------
+# contextual: relations supplied per request instead of persisted as tuples
+# ---------------------------------------------------------------------------
+# These relations are NOT seeded. Probe records them on each corpus entry,
+# and load sends them on each Check/BatchCheck request as `contextual_tuples`.
+# Use this for facts that only matter for one request (active session,
+# current OAuth token, "in this device's geofence").
 contextual:
   relations:
-    - document#active_context
+    - document#active_context   # gates document#can_share via intersection
+
+  # Fraction of sampled checks that carry their contextual tuples.
+  # 1.0 = every request has context (most realistic for first-party apps).
+  # < 1.0 includes denied paths where the context was missing — useful for
+  # measuring the cost of the missing-context fast-fail path.
   attach_probability: 0.5
 
-# Condition context generation. Without this block the tool defaults to:
-# map/list parameters bound on the tuple, scalars supplied at check time,
-# values drawn from a shared 16-value pool with 4 map keys (~25% true rate).
+# ---------------------------------------------------------------------------
+# conditions: how to generate CEL parameter values
+# ---------------------------------------------------------------------------
+# Without this block, fgaperf defaults to: map/list parameters bound on the
+# tuple, scalars supplied at check time, values drawn from a shared 16-value
+# pool with 4 map keys (~25% true rate on `param.contains(x)`-style checks).
+# Override here when defaults don't match your conditions or you want to tune
+# the allowed/denied mix that CEL evaluation produces.
 conditions:
   has_scope:
+    # Which parameters are bound on the TUPLE (vs sent on the request).
+    # Maps and lists usually live on tuples (they describe what was granted);
+    # scalars usually live on the request (they describe the current call).
     tuple_params: [granted_scopes]
     params:
-      granted_scopes: { pool: scopes, keys: 4 }
-      required_scope: { pool: scopes }
-      # Instead of a fixed `keys`, draw map/list sizes per tuple from a
-      # weighted distribution (real datasets skew — most maps small, a few
-      # huge): granted_scopes: { pool: scopes, keys_distribution: { values: [2, 12], weights: [0.9, 0.1] } }
+      granted_scopes:
+        pool: scopes
+        keys: 4               # 4 entries per granted_scopes map
+        # Alternative — draw map/list sizes per tuple from a weighted
+        # distribution (real datasets skew: most maps small, a few huge):
+        # keys_distribution:
+        #   values:  [2, 12]
+        #   weights: [0.9, 0.1]   # 90% small, 10% large
+      required_scope:
+        pool: scopes            # scalar drawn from the same pool
 
+# ---------------------------------------------------------------------------
+# pools: named value pools used by condition parameters
+# ---------------------------------------------------------------------------
 pools:
   scopes:
-    prefix: "scope-"
-    count: 16
+    prefix: "scope-"   # generated as scope-00, scope-01, ...
+    count: 16          # 16 distinct values
+    # Or supply explicit values:
+    # values: [read, write, admin]
 
+# ---------------------------------------------------------------------------
+# probe: which checks to measure, and how the corpus is built
+# ---------------------------------------------------------------------------
 probe:
-  # The relations worth measuring for this model. Omit to probe everything.
+  # Relations to measure. Omit to probe every relation in the model.
+  # Each entry is either "type#relation" (weight 1) or a map with a weight
+  # to skew the load phase's traffic mix toward production-like shares.
+  # Probing itself samples every target equally.
   targets:
-    - document#viewer # deepest path, CEL-reachable via the conditioned wildcard
-    - document#can_share # intersection, CEL-reachable through viewer
-    - document#editor # unconditioned, medium depth
-    - folder#viewer # unconditioned, recursive through parent
-    - group#member # unconditioned shallow baseline
+    - document#viewer     # deepest path; CEL-reachable via the conditioned wildcard
+    - document#can_share  # intersection; CEL-reachable through viewer
+    - document#editor     # unconditioned, medium depth
+    - folder#viewer       # unconditioned; recursive through parent
+    - group#member        # unconditioned shallow baseline
+    # Weighted form:
+    # - {relation: document#viewer, weight: 8}
+    # - {relation: document#editor, weight: 1}
+
+  # Candidate samples per target before allowed/denied resampling. Raise to
+  # smooth out variance in the per-target percentiles; lower for a faster probe.
   samples_per_target: 200
-  cohort_bias: 0.85 # probability a probe subject comes from the object's cohort
-  allowed_ratio: 0.5 # resample corpus to 50/50 allowed/denied; -1 keeps natural mix
+
+  # Probability a probe subject is drawn from the same cohort as the object.
+  # Higher = more allowed paths resolve; lower = more cross-tenant denials.
+  # 0.85 lands close to "real users mostly act within their own tenant".
+  cohort_bias: 0.85
+
+  # Desired allowed/denied mix in the final corpus. 0.5 = 50/50 split.
+  # Use -1 to keep the natural mix observed during probing (recommended when
+  # you want absolute throughput numbers; the resampling can over-represent
+  # rare outcomes).
+  allowed_ratio: 0.5
+
+  # Concurrent probe workers. Higher = faster probe phase; lower = less
+  # write/read contention on a constrained server.
   concurrency: 8
 
+# ---------------------------------------------------------------------------
+# load: how the corpus is replayed
+# ---------------------------------------------------------------------------
 load:
-  endpoint: check # or batch-check
-  batch_size: 20 # items per batch-check request
-  concurrency: 16 # parallel workers
-  rate: 0 # fixed offered req/s; 0 = closed loop
-  warmup: 10s
-  duration: 60s
-  consistency: MINIMIZE_LATENCY # or HIGHER_CONSISTENCY
-  verify_results: true # flag responses that differ from probe expectations
+  # check     = one (user, relation, object) per HTTP request.
+  # batch-check = many tuples per request; trades per-request HTTP overhead
+  # for higher per-tuple throughput when your callers naturally batch.
+  endpoint: check
 
+  # Items per batch-check request. Ignored when endpoint=check.
+  batch_size: 20
+
+  # Parallel workers issuing requests. Cap by how many concurrent Check
+  # callers your real workload generates; raising this past saturation just
+  # piles queueing into the same backend.
+  concurrency: 16
+
+  # Fixed offered requests/sec. 0 = closed loop (each worker issues the next
+  # request as soon as the previous returns; useful for finding saturation).
+  # > 0 = pace the offered load at this rate (useful for measuring latency
+  # at a realistic production load).
+  rate: 0
+
+  # Sweep instead of a single rate. The run steps through these offered
+  # rates against the same store and corpus, then headlines the saturation
+  # knee. Mutually exclusive with `rate`.
+  # sweep:
+  #   rates: [200, 500, 1000, 2000, 4000]
+  #   step_duration: 30s
+
+  # Optional SLO target for response-latency p99. A sweep step counts as
+  # "passing" only if response p99 is under this. Drop it to use the
+  # default knee rule (achieved >= 98% of offered).
+  # slo_p99: 25ms
+
+  # Discarded leading slice — lets caches fill, connections warm up, etc.,
+  # so the measured window reflects steady state. Keep at >= 5s for
+  # meaningful Postgres-backed numbers.
+  warmup: 10s
+
+  # Measured window. Shorter runs are noisier; longer runs amortize tail
+  # effects. 60s is a reasonable smoke; production-grade numbers usually
+  # want 5m+.
+  duration: 60s
+
+  # MINIMIZE_LATENCY = cached reads when possible (typical production
+  # default; matches what fast callers see).
+  # HIGHER_CONSISTENCY = skip caches every time (matches "must be fresh"
+  # callers like UI permission decisions immediately after a write).
+  consistency: MINIMIZE_LATENCY
+
+  # Compare each load-time response against the probe-time ground truth.
+  # Mismatches almost always point at cache staleness or consistency mode;
+  # disable only if you intentionally seed/run with inconsistent settings.
+  verify_results: true
+
+  # Background tuple writes per second during the measured phase, so checks
+  # run against a churning store instead of the read-only best case. The
+  # churn writes only touch fresh churn-only instances, so verify_results
+  # still works. 0 = no churn.
+  # write_rate: 50
+
+# ---------------------------------------------------------------------------
+# metrics: optional server-side view
+# ---------------------------------------------------------------------------
 metrics:
-  # OpenFGA Prometheus endpoint; the compose stack publishes :2112. When set,
-  # the findings doc gains a server-side view (request duration, datastore
-  # queries per check, cache hits). Unreachable = section skipped.
+  # OpenFGA Prometheus endpoint. The bundled compose stack publishes
+  # :2112. When set, the findings doc gains a server-side view (request
+  # duration, datastore queries per check, dispatches, cache hits) diffed
+  # over the measured phase only. Unreachable URL = section skipped.
   prometheus_url: http://localhost:2112

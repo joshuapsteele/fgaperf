@@ -267,7 +267,11 @@ func (r *Report) Markdown() string {
 	w("Generated %s by fgaperf %s. All latencies in milliseconds, measured client-side over HTTP against %s.",
 		r.GeneratedAt.Format("2006-01-02 15:04 UTC"), r.ToolVersion, r.APIURL)
 	w("")
+	w("New to these terms? Jump to the [How to read this](#how-to-read-this) section at the bottom for a per-column legend.")
+	w("")
 	w("## Test configuration")
+	w("")
+	w("*What this run looked like — the inputs that shape every number below. If you're comparing two runs, these are the rows that must match for the comparison to be apples-to-apples.*")
 	w("")
 	w("| Parameter | Value |")
 	w("|---|---|")
@@ -288,6 +292,8 @@ func (r *Report) Markdown() string {
 	w("| Client | %s, %d CPU |", runtime.GOOS+"/"+runtime.GOARCH, runtime.NumCPU())
 	w("")
 	w("## Headline results")
+	w("")
+	w("*Throughput and latency over the measured window. The Population column slices the same set of requests different ways: \"All checks\" is everything; the CEL/contextual rows split out paths that touched a CEL condition or carried request-scoped tuples. Compare populations of similar graph depth for a clean read.*")
 	w("")
 	if len(r.Sweep) > 0 {
 		if r.SweepKneeRate > 0 {
@@ -360,6 +366,8 @@ func (r *Report) Markdown() string {
 	if len(r.Sweep) > 0 {
 		w("## Rate sweep")
 		w("")
+		w("*One row per offered rate. Read down the Achieved column: as long as it tracks Offered, the server is keeping up. Once Achieved plateaus and Response p99 starts climbing, you've passed the knee. The marked row is the highest step that still kept up.*")
+		w("")
 		w("| Offered req/s | Achieved | Dropped slots | p50 | p95 | p99 | Response p99 | Errors | DS queries/req |")
 		w("|---|---|---|---|---|---|---|---|---|")
 		for _, st := range r.Sweep {
@@ -387,6 +395,8 @@ func (r *Report) Markdown() string {
 	}
 	w("## Per-relation breakdown")
 	w("")
+	w("*Latency split out by relation. This is the cleanest place to ask \"is one specific relation hot?\" — populations above mix relations of different graph depth, but here every row is a single relation. A relation with much higher p99 than its peers usually means a deeper or denser resolution path; check the model.*")
+	w("")
 	w("| Relation | Requests | Errors | Mean | p50 | p95 | p99 |")
 	w("|---|---|---|---|---|---|---|")
 	targets := make([]string, 0, len(r.ByTarget))
@@ -404,6 +414,8 @@ func (r *Report) Markdown() string {
 	w("")
 	if len(r.ErrorsByClass) > 0 {
 		w("## Errors")
+		w("")
+		w("*Failed requests grouped by class. Timeouts and 5xx point at server- or datastore-side trouble (look at the server-side view, or lower offered rate). 4xx and decode errors point at fgaperf or config (mismatched model, malformed contextual tuples). Connection errors usually mean the server restarted mid-run.*")
 		w("")
 		w("| Class | Count |")
 		w("|---|---|")
@@ -428,6 +440,8 @@ func (r *Report) Markdown() string {
 	if r.Server != nil && r.Server.RequestDuration.Count > 0 {
 		s := r.Server
 		w("## Server-side view")
+		w("")
+		w("*OpenFGA's own metrics for the measured phase. The client-side numbers above include HTTP and JSON overhead; these don't. Use them to separate \"the server is slow\" from \"the network/serialization is slow\", and to size the datastore by datastore queries per request.*")
 		w("")
 		w("Diffed from OpenFGA's Prometheus metrics between the start and end of the measured phase. Percentiles are estimated from histogram buckets, so they are coarser than the client-side numbers above.")
 		w("")
@@ -455,10 +469,34 @@ func (r *Report) Markdown() string {
 	if r.SeedRate > 0 {
 		w("## Write path")
 		w("")
+		w("*A throwaway baseline for tuple writes. This is the bulk-seed path (large transactional batches), so it's faster than what a per-request Write would see. Treat it as a sanity check on the datastore's write headroom, not as a write-latency benchmark.*")
+		w("")
 		w("Seeding %d tuples took %s, a sustained write rate of %.0f tuples/sec using transactional Write calls.",
 			r.TupleCount, r.SeedDuration, r.SeedRate)
 		w("")
 	}
+	w("## How to read this")
+	w("")
+	w("Reference for the columns and terms used in this document. The README's Glossary covers the same terms with links to upstream OpenFGA documentation.")
+	w("")
+	w("**Latency percentiles** — `p50` (median), `p90`, `p95`, `p99` are the latency values that fraction of requests came in under. `p99 = 8.0` means 99%% of requests finished in 8 ms or less, but 1%% (the tail) took longer. Tail latency drives user-visible pain; mean is rarely the right number to optimize.")
+	w("")
+	w("**Service latency vs response latency** — service latency is measured from \"request leaves the client\" to \"response arrives\" — what `curl` would see. Response latency is measured from each request's *scheduled* send time, so when the server falls behind and requests queue waiting for a free worker, that queueing time shows up in response latency but not in service latency. Service latency understates pain under saturation; response latency is what your real callers feel.")
+	w("")
+	w("**Offered rate vs achieved rate** — offered is what the load generator tried to send (set by `load.rate`). Achieved is what the server actually processed. Achieved < offered means the server fell behind; the gap shows up as dropped rate slots (a tick fired but every worker was still busy) and as rising response-latency p99.")
+	w("")
+	w("**Throughput** — completed requests per second over the measured window. The Mismatches count is responses whose allowed/denied differs from probe-time ground truth — usually cache staleness, sometimes a real bug. The Errors count covers timeouts, 5xx, decode failures, etc.")
+	w("")
+	w("**Population slices.** \"All checks\" is every measured Check or BatchCheck. \"CEL-conditioned paths\" are checks whose resolution can evaluate a CEL condition somewhere in the graph (computed statically from the model — fgaperf doesn't trace per request). \"With contextual tuples\" are checks where `contextual.attach_probability` won and the request carried contextual tuples. \"Background tuple writes\" is the churn rate's Write/Delete latency, only present when `load.write_rate > 0`.")
+	w("")
+	w("**Per-relation table.** \"Requests\" is sample count for that relation in the measured window; \"Errors\" counts failures attributed to checks of that relation. Compare relations of similar graph depth — a deeper relation with higher latency may be entirely expected.")
+	w("")
+	w("**Rate sweep.** \"DS queries/req\" is the server-reported mean datastore queries per Check at that offered rate; it rises sharply once OpenFGA starts spending most of its time on the database. The knee is the highest offered step that kept up (Achieved ≥ 98%% of Offered) and, if `load.slo_p99` was set, also stayed under that SLO.")
+	w("")
+	w("**Saturation knee** — the highest sustained rate. Past it, achieved rate plateaus and response-latency p99 climbs. Useful for capacity planning: the knee, minus headroom, is what you can safely send.")
+	w("")
+	w("**Server-side view.** Diffed from OpenFGA's Prometheus histograms over the measured phase, so percentiles are bucket-estimated and slightly coarser than client-side. \"Datastore queries per request\" is the most portable capacity metric — independent of network and JSON overhead, so you can use it to size the database without identical client placement.")
+	w("")
 	w("## Caveats and interpretation")
 	w("")
 	if r.CorpusSize > 0 && r.CorpusDistinct > 0 {
