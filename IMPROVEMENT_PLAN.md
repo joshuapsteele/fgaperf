@@ -552,6 +552,344 @@ run". Link it from the findings doc's caveats section. **Files:** `docs/`,
 
 ---
 
+## P2 — User-friendliness and onboarding
+
+These items lower the bar for users who aren't already fluent in OpenFGA or
+performance testing. None are correctness fixes; all of them reduce
+time-to-first-useful-run or time-to-understand-the-numbers. The README
+glossary, annotated `examples/config.yaml`, `docs/configuration-reference.md`,
+findings-doc inline explainers, footer legend, and expanded `inspect` legend
+already landed (2026-06-13); the items below are the next layer.
+
+### 23. Live progress during probe and load phases
+
+**Motivation.** After the header line, `probe` and `run` are silent for
+seconds to minutes. A first-time user can't tell the difference between
+"working" and "hung", and an experienced user can't tell early whether the
+run will need to be killed and reconfigured. Item 20 covers the same idea for
+`setup`; this item covers probe and load.
+
+**Sketch.**
+- `probe`: print `probed N/M targets, current target: T (allowed/denied so
+  far: A/D)` every ~2s from a background goroutine. Compute remaining ETA
+  from rolling probe latency.
+- `run`: print `t+12s of 60s | 4892 req/s | p99 7.8ms | 0 errors` every
+  ~5s. During warmup, label the line `warmup` and zero the percentiles so a
+  user knows they're not the headline number.
+- Detect non-TTY (`!isatty(stderr)`) and skip the live output, so CI logs
+  stay clean.
+
+**Files.** `probe.go`, `load.go`, possibly new `progress.go` for the rolling
+window.
+
+**Accept.** A `fgaperf all` run with no terminal output flag continuously
+prints progress lines; a `fgaperf all 2>/dev/null | cat` run produces only
+the existing summary lines.
+
+### 24. `fgaperf doctor` / pre-flight checks
+
+**Motivation.** New users hit the same handful of failure modes before they
+ever get to a measurement: OpenFGA not running, wrong port, no permissions to
+create stores, metrics endpoint not exposed, datastore is `memory` (so
+numbers are useless), model JSON doesn't match the running OpenFGA version.
+Diagnose them once, up front.
+
+**Sketch.** `fgaperf doctor -config config.yaml` runs a checklist and prints
+a pass/fail line per check with an actionable hint on each fail:
+- HTTP reachability to `openfga.api_url`.
+- `CreateStore` + `DeleteStore` round-trip with a temp name.
+- Model file parses; `WriteModel` to the temp store succeeds.
+- `metrics.prometheus_url` reachable (when set), with required metric
+  families present (`openfga_request_duration_ms`,
+  `openfga_datastore_query_count`).
+- Server reports a non-`memory` datastore if we can determine it from
+  metrics labels (warn, not fail, since it's only detectable indirectly).
+- A pre-flight short-form lives inside `setup`/`run`/`all` too: on
+  connection refused, print "OpenFGA not reachable at <url> — try `docker
+  compose ps`" instead of a bare error.
+
+**Files.** New `doctor.go`, `main.go`, `client.go` (a few capability probes).
+
+**Accept.** With the compose stack stopped, `fgaperf doctor` prints a clear
+"OpenFGA not reachable at http://localhost:8080 — run `docker compose up
+-d`" message and exits non-zero; with the stack running, every check
+passes.
+
+### 25. Actionable error wrapping
+
+**Motivation.** Today's errors are technically accurate but
+unhelpful-on-the-first-read. "store not found" doesn't tell a user the state
+file is stale; a YAML `unknown field` error doesn't suggest the nearest known
+key; a `connection refused` from the load phase doesn't suggest port
+checking. Each unfriendly error is a stall.
+
+**Sketch.**
+- YAML `KnownFields` rejection: catch and re-emit with line/column (already
+  available from `yaml.v3`'s position info) plus a Levenshtein-nearest
+  known key from the schema (e.g. "did you mean `allowed_ratio`?").
+- "store not found" / 404 on the recorded store ID: suggest "ran
+  `fgaperf cleanup` to clear stale `.fgaperf-state.json`?".
+- Connection refused / dial timeout: include `openfga.api_url` and
+  suggest `docker compose ps` if the URL is localhost.
+- Unauthorized (401/403): suggest `openfga.api_token` and the
+  `OPENFGA_AUTHN_METHOD` server flag.
+- Model file missing or unparseable: print the exact path searched and the
+  CLI command to produce it (`fga model transform`).
+
+**Files.** `main.go`, `client.go`, `config.go`. Consider a small
+`errors.go` for the suggestion helpers.
+
+**Accept.** Each of the five error classes above produces a message naming
+the suspected cause and the command to verify or fix it.
+
+### 26. `fgaperf plan` — server-free dry run
+
+**Motivation.** Users iterate on their config blind: they tweak fanout,
+cohorts, or probe targets and have to spin up a full run (or do mental math
+across `seed.go`) to know what they actually configured. A no-server preview
+collapses the loop. Distinct from item 20's seeding-at-scale focus — this is
+for configuration iteration, not large-deployment planning.
+
+**Sketch.** `fgaperf plan -config config.yaml` loads the model + config,
+applies defaults, runs `validate` and `validateAgainstModel`, then prints:
+- The resolved config (post-defaults YAML, secrets redacted) — same payload
+  `compare` uses.
+- Per-type instance counts and totals.
+- Per-relation expected tuple counts (from fanout × instance counts ×
+  accepted user types), with totals.
+- Probe sample budget: targets × `samples_per_target`, plus expected
+  corpus size after resampling.
+- A duration estimate for the load phase only (warmup + duration).
+- Warnings: probe targets that would produce ~0 corpus entries (no
+  assignable refs reachable), conditions referenced without a `pools`
+  entry, etc.
+
+Add `fgaperf validate -config X` as an alias that runs only the
+validation/resolved-config print, no estimates.
+
+**Files.** New `plan.go`, `main.go`, `seed.go` (expose expected-count
+calculators without generating tuples).
+
+**Accept.** Running `fgaperf plan` on `examples/config.yaml` exits 0 with a
+report whose tuple-count totals match what an actual `setup` would seed;
+running it on a config whose `probe.targets` includes a relation with no
+assignable subjects prints a warning naming the target.
+
+### 27. Findings TL;DR headline line
+
+**Motivation.** The findings doc is dense. A reader who just wants the
+upshot — to paste into a Slack message or compare to last week's run —
+should not have to scroll. Sweep runs already get a knee-rate sentence;
+fixed-rate and closed-loop runs deserve the same.
+
+**Sketch.** A single-paragraph "Summary" section between the test
+configuration table and headline results, with three to five facts:
+sustained throughput, p99, CEL-vs-unconditioned delta, mismatch count,
+notable callout (saturation, errors, write churn). Sweep runs get a knee
+line in the same slot. Keep it generated, not hand-written — same template
+filled with the headline numbers already in `Report`.
+
+**Files.** `report.go`.
+
+**Accept.** Every findings doc starts with a one-paragraph summary; the
+example findings doc gains a summary that names throughput, p99, and the
+zero-mismatch result.
+
+### 28. "What you might change" hints in findings
+
+**Motivation.** The findings doc reports what happened; it doesn't suggest
+what to do about it. The most common failure of a first run isn't the
+server's fault — it's a config that produced an unrepresentative corpus or
+the wrong probe target mix. A heuristic suggestion section turns the report
+into a guide for the next run.
+
+**Sketch.** A new `## Suggestions` section, only rendered when at least one
+heuristic fires. Conservative phrasing ("consider", not "do"). Initial
+rules:
+- Corpus duplication > 2x on any target → suggest raising
+  `probe.samples_per_target` or setting `allowed_ratio: -1` for that
+  target's natural mix.
+- Achieved < 98% of offered on a non-sweep fixed-rate run → suggest a
+  sweep across rates below the offered one.
+- Mismatches > 0 with `MINIMIZE_LATENCY` and `write_rate > 0` → call it
+  expected (cache invalidation lag) and point at `HIGHER_CONSISTENCY` if
+  fresh reads matter.
+- Server-side p99 ≪ client p99 → suggest checking client/server
+  co-location.
+- `seed.cohort_bias` low (< 0.5) on a model with intersections →
+  suggest raising it (corpus likely all-denied).
+- Closed-loop run on a model with `load.write_rate: 0` → mention sweep
+  + write_rate as the more realistic measurement.
+
+Each rule is one function `(r *Report, cfg *Config) (string, bool)`; the
+section iterates the registered rules. Easy to extend later.
+
+**Files.** `report.go`, possibly a new `suggestions.go`.
+
+**Accept.** Re-running the example config produces zero suggestions
+(healthy run); a deliberately broken config (cohort_bias 0.1, intersection
+target) produces a Suggestions section naming cohort_bias.
+
+### 29. ANSI color and bold on isatty stdout/stderr
+
+**Motivation.** Pure polish, but disproportionate. Headline numbers in
+bold, errors in red, warnings in yellow, and the most common new-user
+failure (compose stack down) gets a tinted help block. Turns "this feels
+like a hobby tool" into "this feels supported".
+
+**Sketch.** A tiny color helper (`color.Bold(s)`, `color.Red(s)`,
+`color.Yellow(s)`, `color.Dim(s)`) that no-ops when
+`!isatty(fd)` or `NO_COLOR` is set (https://no-color.org). Apply to:
+- Per-phase summary lines (`throughput:`, `server:`, etc.).
+- Doctor checklist (✓/✗ in green/red).
+- The probe duplication warning (yellow).
+- `fail()` output (red).
+- Findings markdown stays plain — pipes and editors render that.
+
+**Files.** New `color.go`, `main.go`, `probe.go`, `load.go`.
+
+**Accept.** `fgaperf all | cat` produces output with no ANSI escapes;
+running it directly in a terminal shows bold headline numbers and a
+red error if the server is unreachable.
+
+### 30. `docs/getting-started.md` — narrative walkthrough
+
+**Motivation.** The README is reference-shaped. A reader who is new to
+OpenFGA, has a model, and just wants to know "what do I do next" needs a
+linear walkthrough. Keeps the README focused on reference; the new doc
+covers the path through the tool.
+
+**Sketch.** ~600 words, in order:
+1. What fgaperf measures (one paragraph; link to README glossary).
+2. Bring up the server (compose link).
+3. `fgaperf inspect` against the example model; explain the output.
+4. First smoke run (`all` with shortened warmup/duration).
+5. Reading the findings doc: walk the example findings end-to-end with
+   "this number means…".
+6. One tuning loop: bump `seed.cohorts`, rerun, `fgaperf compare`.
+7. Where to go next (configuration reference, methodology page).
+
+Link from the README's Quick Start.
+
+**Files.** New `docs/getting-started.md`, README.
+
+**Accept.** A reader following the doc top-to-bottom against a fresh
+clone reaches a successful smoke run and a comparison without consulting
+the README reference once.
+
+### 31. `docs/recipes.md` — short configuration recipes
+
+**Motivation.** Most users come in with a specific question, not a desire
+to learn the whole tool. A recipe page indexes the tool by question.
+
+**Sketch.** One recipe per common scenario, each 5–10 lines of YAML plus
+one explanatory paragraph:
+- Find this server's max sustained throughput.
+- Measure cache impact (`MINIMIZE_LATENCY` vs `HIGHER_CONSISTENCY`,
+  same store).
+- Compare two model versions (same load, two model files).
+- Test under realistic write churn.
+- Spot a hot relation (probe targets weighted to one).
+- Reproduce a noisy run exactly (`random_seed`).
+- Run before/after a server upgrade.
+
+Cross-link to relevant configuration-reference sections.
+
+**Files.** New `docs/recipes.md`, README.
+
+**Accept.** Each recipe runs as-is against the bundled compose stack and
+produces a non-trivial findings doc (zero mismatches, populated tables).
+
+### 32. Per-subcommand `--help` with examples
+
+**Motivation.** `fgaperf` with no args prints a one-line usage. Each
+subcommand should print its purpose, flags, one worked example, and the
+most common gotcha — at the moment the user is one keystroke from
+needing it.
+
+**Sketch.** Replace the single `flag.NewFlagSet` per subcommand with a
+small map of `(name, summary, longHelp, flags, example)`. `fgaperf
+<cmd> -h` prints the long form; `fgaperf -h` lists subcommand summaries
+and points at `<cmd> -h` for each.
+
+Examples worth writing into help text:
+- `setup -h`: "writes `.fgaperf-state.json`; needs OpenFGA reachable;
+  re-running creates a fresh store".
+- `probe -h`: "needs `setup` to have run; reads model + state, writes
+  `corpus.json`".
+- `run -h`: gotcha — "needs both setup and probe; sweep and rate are
+  mutually exclusive".
+- `cleanup -h`: gotcha — "`-all-stores` deletes by name, not by ID; use
+  when state file is gone".
+
+**Files.** `main.go`.
+
+**Accept.** Every subcommand responds to `-h` with the long-form help,
+including a worked example; `fgaperf -h` lists every subcommand with its
+one-line summary.
+
+### 33. README status badges
+
+**Motivation.** Quick visual signal that the project is alive and
+configured. Costs nothing to add.
+
+**Sketch.** Add badges to the README header for: CI status (GitHub
+Actions), license (Apache-2.0), Go version (from `go.mod`). Shield.io
+URLs only; no external trackers.
+
+**Files.** `README.md`.
+
+**Accept.** README renders with three badges above the intro paragraph;
+the CI badge reflects `main`'s actual state.
+
+### 34. `docs/troubleshooting.md` — common failure modes
+
+**Motivation.** Even with item 25 (actionable errors), users will hit
+multi-step problems that need a paragraph, not a one-line hint. Five
+problem/fix entries cover most first-week issues.
+
+**Sketch.** Five entries, problem → diagnosis → fix:
+1. "OpenFGA not reachable" (port mismatch, docker not started,
+   colima/docker context).
+2. "Store not found" mid-run (state file stale, `cleanup`).
+3. "Probe corpus is empty / all-denied" (cohort_bias, target with no
+   assignable refs, model mismatch).
+4. "Verification mismatches under churn" (cache + consistency tradeoff;
+   when it's expected vs a real bug).
+5. "Numbers don't match production" (datastore type, client placement,
+   warmup too short).
+
+Each links to the relevant configuration-reference section.
+
+**Files.** New `docs/troubleshooting.md`, README.
+
+**Accept.** Each of the five scenarios has a complete walkthrough; the
+README links to the doc from a new "If something goes wrong" line near
+Quick Start.
+
+### 35. `fgaperf inspect --json`
+
+**Motivation.** Today `inspect` prints a terminal-formatted summary;
+users with their own tooling have to re-parse the model JSON from
+scratch to get the same information (assignable relations, CEL
+reachability, condition param split). Emitting the analysis as JSON
+makes the tool composable.
+
+**Sketch.** A `--json` flag on `inspect` that prints the `Analysis`
+struct (or a serialization-friendly projection of it: types, relations
+with `[assignable, CEL, contextual]` tags, conditions with param
+splits) as JSON to stdout and skips the human-readable summary. Stable
+schema (this is now an API surface for downstream tools).
+
+**Files.** `main.go`, `model.go` (a `MarshalJSON` projection on
+`Analysis` if the natural shape isn't right).
+
+**Accept.** `fgaperf inspect --json -config examples/config.yaml | jq
+'.relations[] | select(.tags | contains(["CEL"])) | .key'` lists the
+CEL-reachable relations.
+
+---
+
 ## Suggested sequencing
 
 1. **Trust the numbers:** items 1–5 (small, mostly independent diffs).
@@ -561,6 +899,13 @@ run". Link it from the findings doc's caveats section. **Files:** `docs/`,
 4. **Realism:** items 10–13 as needed by actual investigations.
 5. **Breadth:** P2 items opportunistically; item 14 (`list-objects`) first if
    any consumer of the tool uses that API in production.
+6. **User-friendliness:** items 23, 25, 24 first (live progress, actionable
+   errors, doctor) — they remove the most common first-run stalls. Then
+   27 + 28 (findings TL;DR and suggestions) to make output self-explanatory.
+   Then 30 + 31 + 34 (docs walkthrough, recipes, troubleshooting) to round
+   out onboarding. 26 (`plan`) and 32 (per-subcommand help) are independent
+   and small enough to slot in anywhere. 29 (color) and 33 (badges) are
+   polish; 35 (`inspect --json`) only when a downstream tool needs it.
 
 ## Invariants to re-verify after any change
 
