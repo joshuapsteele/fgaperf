@@ -29,9 +29,11 @@ type Sample struct {
 	Latency     time.Duration // service latency: request start -> response
 	RespLatency time.Duration // fixed-rate only: intended send time -> response (includes queueing delay)
 	Completed   time.Time
-	Err         bool
+	Err         bool   // transport/HTTP failure: no valid latency, excluded from percentiles
 	ErrClass    string // timeout | connection | 4xx | 5xx | decode
 	ErrMsg      string
+	ItemErrors  int    // batch-check: per-item application errors when the HTTP call itself succeeded (Latency stays valid)
+	ItemErrMsg  string // batch-check: summary of the item errors, surfaced separately from transport errors
 	Mismatch    bool
 	Items       int // 1 for check; batch size for batch-check
 	ResultCount int // list-objects/list-users: size of the returned set (-1 = N/A)
@@ -48,7 +50,7 @@ type LoadResult struct {
 	Duration        time.Duration
 	WallClock       time.Duration
 	MeasuredWindow  time.Duration // first to last measured-sample completion
-	DroppedSlots    int64         // fixed-rate slots dropped because workers fell a full buffer behind
+	DroppedSlots    int64         // fixed-rate measured-window slots dropped because workers fell a full buffer behind (warmup-phase drops excluded)
 	Samples         []Sample
 	TotalErrors     int64
 	TotalChecks     int64
@@ -274,6 +276,7 @@ type SampleRecord struct {
 	Contextual    bool   `json:"contextual,omitempty"`
 	Err           bool   `json:"err,omitempty"`
 	ErrClass      string `json:"err_class,omitempty"`
+	ItemErrors    int    `json:"item_errors,omitempty"` // batch-check: per-item errors on an otherwise-successful call
 	Mismatch      bool   `json:"mismatch,omitempty"`
 }
 
@@ -326,6 +329,7 @@ func (w *sampleWriter) write(s Sample, offeredRate int) error {
 		Contextual:    s.Contextual,
 		Err:           s.Err,
 		ErrClass:      s.ErrClass,
+		ItemErrors:    s.ItemErrors,
 		Mismatch:      s.Mismatch,
 	})
 }
@@ -445,7 +449,16 @@ func RunLoad(client *FGAClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 					return
 				case rateCh <- intended:
 				default:
-					atomic.AddInt64(&droppedSlots, 1)
+					// Only count drops whose slot was scheduled in the measured
+					// window. Warmup runs at the offered rate too, and a cold
+					// server (empty caches, unwarmed pool) is exactly when workers
+					// fall behind — so counting warmup drops would pollute a number
+					// the report presents as a measured-phase capacity signal. This
+					// gates the drop counter the same way every other measured
+					// metric is gated on warmupEnd.
+					if !intended.Before(warmupEnd) {
+						atomic.AddInt64(&droppedSlots, 1)
+					}
 				}
 			}
 		}()
@@ -498,7 +511,16 @@ func RunLoad(client *FGAClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 				s.RespLatency = s.Completed.Sub(intended)
 			}
 			atomic.AddInt64(&checks, int64(s.Items))
-			if s.Completed.After(warmupEnd) {
+			// Closed loop classifies a sample as measured by its completion time.
+			// Fixed-rate classifies by the slot's intended (offered) time instead:
+			// a slot offered during warmup belongs to warmup even if a worker only
+			// drains it after the boundary, so stale buffered slots can't inflate
+			// the measured response-latency tail with warmup-era queueing delay.
+			measured := s.Completed.After(warmupEnd)
+			if rateCh != nil {
+				measured = !intended.Before(warmupEnd)
+			}
+			if measured {
 				if s.Err {
 					atomic.AddInt64(&errCount, 1)
 				}
@@ -539,6 +561,14 @@ func RunLoad(client *FGAClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 			res.ErrorsByClass[s.ErrClass]++
 			if len(res.ErrorSamples) < maxErrorSamples && s.ErrMsg != "" {
 				res.ErrorSamples = append(res.ErrorSamples, s.ErrMsg)
+			}
+		} else if s.ItemErrors > 0 {
+			// The batch's HTTP call succeeded, so its latency is already in the
+			// percentile populations; surface the item-level errors here under a
+			// distinct class without excluding that latency.
+			res.ErrorsByClass["batch-item"]++
+			if len(res.ErrorSamples) < maxErrorSamples && s.ItemErrMsg != "" {
+				res.ErrorSamples = append(res.ErrorSamples, s.ItemErrMsg)
 			}
 		}
 		if sw != nil {
@@ -700,13 +730,17 @@ func doBatch(client *FGAClient, picker *corpusPicker, mism *mismatchRecorder, co
 		}
 	}
 	if len(itemErrs) > 0 {
-		s.Err = true
-		s.ErrClass = "batch-item"
+		// The HTTP round trip succeeded, so s.Latency is a real service-latency
+		// measurement and must stay in the percentile populations. Reserve s.Err
+		// (which doubles as the latency-exclusion flag in summarizeBy) for
+		// transport failures; record item-level errors separately so a partially
+		// errored batch is still counted, not silently dropped.
+		s.ItemErrors = len(itemErrs)
 		details := itemErrs
 		if len(details) > 3 {
 			details = append(append([]string{}, details[:3]...), fmt.Sprintf("%d more", len(itemErrs)-3))
 		}
-		s.ErrMsg = fmt.Sprintf("batch-check item errors (%d/%d): %s", len(itemErrs), n, strings.Join(details, "; "))
+		s.ItemErrMsg = fmt.Sprintf("batch-check item errors (%d/%d): %s", len(itemErrs), n, strings.Join(details, "; "))
 	}
 	return s
 }

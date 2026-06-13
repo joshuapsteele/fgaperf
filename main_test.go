@@ -32,14 +32,39 @@ func TestValidateStateCorpusConsistency(t *testing.T) {
 }
 
 func TestValidateResumeStateBounds(t *testing.T) {
-	if err := validateResumeState(State{TupleCount: 10, SeededTuples: -1}, 10); err == nil {
+	if err := validateResumeState(State{TupleCount: 10, SeededTuples: -1, BatchSize: 100}, 10, 100); err == nil {
 		t.Fatal("negative seeded_tuples passed validation")
 	}
-	if err := validateResumeState(State{TupleCount: 10, SeededTuples: 11}, 10); err == nil {
+	if err := validateResumeState(State{TupleCount: 10, SeededTuples: 11, BatchSize: 100}, 10, 100); err == nil {
 		t.Fatal("out-of-range seeded_tuples passed validation")
 	}
-	if err := validateResumeState(State{TupleCount: 10, SeededTuples: 5}, 10); err != nil {
+	if err := validateResumeState(State{TupleCount: 10, SeededTuples: 5, BatchSize: 100}, 10, 100); err != nil {
 		t.Fatalf("valid resume state rejected: %v", err)
+	}
+}
+
+// Resume skips already-committed batches by their original boundaries, so a
+// changed seed.batch_size must be rejected: re-batching at a different size lets
+// a new batch straddle an old boundary, and OpenFGA rejects the whole
+// transactional batch as a duplicate — dropping its not-yet-written tuples and
+// quietly marking the seed complete with a hole.
+func TestValidateResumeStateBatchSize(t *testing.T) {
+	base := State{TupleCount: 100, SeededTuples: 50, BatchSize: 100}
+	if err := validateResumeState(base, 100, 100); err != nil {
+		t.Fatalf("unchanged batch size rejected: %v", err)
+	}
+	if err := validateResumeState(base, 100, 50); err == nil {
+		t.Fatal("changed batch size must be rejected (resume alignment depends on it)")
+	}
+	// A pre-this-field state file records BatchSize 0; tolerate it so a legacy
+	// interrupted seed can still resume (no worse than before the field existed).
+	legacy := State{TupleCount: 100, SeededTuples: 50, BatchSize: 0}
+	if err := validateResumeState(legacy, 100, 50); err != nil {
+		t.Fatalf("legacy state with no recorded batch size should resume: %v", err)
+	}
+	// A tuple-count mismatch is still caught even when the batch size matches.
+	if err := validateResumeState(base, 99, 100); err == nil {
+		t.Fatal("changed tuple count must be rejected")
 	}
 }
 

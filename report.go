@@ -677,7 +677,7 @@ func (r *Report) Markdown() string {
 	if len(r.ErrorsByClass) > 0 {
 		w("## Errors")
 		w("")
-		w("*Failed requests grouped by class. Timeouts and 5xx point at server- or datastore-side trouble (look at the server-side view, or lower offered rate). 4xx and decode errors point at fgaperf or config (mismatched model, malformed contextual tuples). Connection errors usually mean the server restarted mid-run.*")
+		w("*Failed requests grouped by class. Timeouts and 5xx point at server- or datastore-side trouble (look at the server-side view, or lower offered rate). 4xx and decode errors point at fgaperf or config (mismatched model, malformed contextual tuples). Connection errors usually mean the server restarted mid-run. The `batch-item` class counts batch-check calls whose HTTP round trip succeeded but that carried at least one item-level error; their service latency is still included in the percentiles above, since the request itself completed.*")
 		w("")
 		w("| Class | Count |")
 		w("|---|---|")

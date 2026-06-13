@@ -121,17 +121,61 @@ func TestBatchCheckItemErrorsAreReported(t *testing.T) {
 	}}
 
 	s := doBatch(client, newCorpusPicker(corpus), newMismatchRecorder(), corpus, cfg, rand.New(rand.NewSource(1)))
-	if !s.Err {
-		t.Fatal("batch item error was not reported on the sample")
+	// The HTTP call succeeded, so the sample must NOT be flagged as a transport
+	// error (that flag excludes its latency from the percentiles). The item
+	// error is surfaced via ItemErrors / ItemErrMsg instead.
+	if s.Err {
+		t.Fatal("an item-level error must not mark the whole batch as a transport error")
 	}
-	if s.ErrClass != "batch-item" {
-		t.Fatalf("ErrClass = %q, want batch-item", s.ErrClass)
+	if s.ItemErrors != 1 {
+		t.Fatalf("ItemErrors = %d, want 1", s.ItemErrors)
 	}
-	if !strings.Contains(s.ErrMsg, "boom") {
-		t.Fatalf("ErrMsg = %q, want item error detail", s.ErrMsg)
+	if !strings.Contains(s.ItemErrMsg, "boom") {
+		t.Fatalf("ItemErrMsg = %q, want item error detail", s.ItemErrMsg)
 	}
 	if !s.Mismatch {
 		t.Fatal("successful batch items should still be verified for mismatches")
+	}
+}
+
+// A batch-check whose HTTP round trip succeeded carries a real service latency
+// even when an individual item reports an application-level error. That latency
+// must stay in the percentile populations; only a transport failure (no valid
+// latency) is excluded.
+func TestBatchCheckItemErrorLatencyCounted(t *testing.T) {
+	client, srv := testClient(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"result": map[string]any{
+				"c0": map[string]any{"allowed": true},
+				"c1": map[string]any{"error": map[string]any{"message": "boom"}},
+			},
+		})
+	})
+	defer srv.Close()
+
+	cfg, err := LoadConfigFile("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Load.BatchSize = 2
+	corpus := &Corpus{StoreID: "store", ModelID: "model", Entries: []CorpusEntry{
+		{User: "user:1", Relation: "viewer", Object: "doc:1", Target: "doc#viewer", Expected: true},
+		{User: "user:2", Relation: "viewer", Object: "doc:2", Target: "doc#viewer", Expected: true},
+	}}
+
+	s := doBatch(client, newCorpusPicker(corpus), newMismatchRecorder(), corpus, cfg, rand.New(rand.NewSource(1)))
+	if s.ItemErrors != 1 {
+		t.Fatalf("ItemErrors = %d, want 1", s.ItemErrors)
+	}
+	st := Summarize([]Sample{s})
+	if st.Count != 1 {
+		t.Fatalf("partially-errored batch dropped from the latency population: Count = %d, want 1", st.Count)
+	}
+	if st.Errors != 0 {
+		t.Fatalf("item error counted as a latency-excluding error: Errors = %d, want 0", st.Errors)
+	}
+	if st.P50 != s.Latency {
+		t.Fatalf("batch latency %v not reflected in percentiles (P50 = %v)", s.Latency, st.P50)
 	}
 }
 
@@ -165,6 +209,77 @@ func TestWarmupMismatchesExcludedFromMeasuredCounts(t *testing.T) {
 	if res.Mismatches != measuredMismatches {
 		t.Fatalf("reported mismatches = %d, want measured-sample count %d", res.Mismatches, measuredMismatches)
 	}
+}
+
+// A fixed-rate run issues at the offered rate during warmup too. On a cold
+// server, workers can fall a full buffer behind precisely during warmup and
+// drop slots — but those drops are a warmup artifact, not a measured-phase
+// capacity signal, so they must stay out of DroppedSlots (which the report
+// presents as a measured-phase quantity). A run that saturates the *measured*
+// phase must still report a non-zero count, so the gate is "warmup excluded",
+// not "never counts". These cases lean on timing; margins are generous, and the
+// ~1s buffer-fill floor (buffer cap == rate) is inherent to the drop mechanism.
+func TestFixedRateDroppedSlotsExcludeWarmup(t *testing.T) {
+	corpus := &Corpus{StoreID: "store", ModelID: "model", Entries: []CorpusEntry{
+		{User: "user:1", Relation: "viewer", Object: "doc:1", Target: "doc#viewer", Expected: true},
+	}}
+
+	t.Run("warmup-only slowness is not counted", func(t *testing.T) {
+		var slow atomic.Bool
+		slow.Store(true)
+		client, srv := testClient(func(w http.ResponseWriter, r *http.Request) {
+			if slow.Load() {
+				time.Sleep(250 * time.Millisecond) // unsustainable at 100 req/s with 1 worker
+			}
+			json.NewEncoder(w).Encode(map[string]bool{"allowed": true})
+		})
+		defer srv.Close()
+		// Server turns instant well before the measured window starts, so the
+		// single worker drains the warmup backlog and the measured phase is clean.
+		time.AfterFunc(1200*time.Millisecond, func() { slow.Store(false) })
+
+		cfg, err := LoadConfigFile("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg.Load.Rate = 100
+		cfg.Load.Concurrency = 1
+		cfg.Load.Warmup = 1700 * time.Millisecond
+		cfg.Load.Duration = 400 * time.Millisecond
+
+		res, err := RunLoad(client, corpus, cfg, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.DroppedSlots != 0 {
+			t.Fatalf("DroppedSlots = %d, want 0 (warmup-phase drops must be excluded)", res.DroppedSlots)
+		}
+	})
+
+	t.Run("measured-phase slowness is counted", func(t *testing.T) {
+		client, srv := testClient(func(w http.ResponseWriter, r *http.Request) {
+			time.Sleep(250 * time.Millisecond) // slow for the whole run
+			json.NewEncoder(w).Encode(map[string]bool{"allowed": true})
+		})
+		defer srv.Close()
+
+		cfg, err := LoadConfigFile("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg.Load.Rate = 100
+		cfg.Load.Concurrency = 1
+		cfg.Load.Warmup = 100 * time.Millisecond
+		cfg.Load.Duration = 1300 * time.Millisecond
+
+		res, err := RunLoad(client, corpus, cfg, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.DroppedSlots == 0 {
+			t.Fatal("DroppedSlots = 0, want > 0 (sustained measured-phase saturation must still count)")
+		}
+	})
 }
 
 // Response latency must be summarized independently of service latency so the

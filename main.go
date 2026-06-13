@@ -28,6 +28,7 @@ type State struct {
 	StoreID      string    `json:"store_id"`
 	ModelID      string    `json:"model_id"`
 	TupleCount   int       `json:"tuple_count"`
+	BatchSize    int       `json:"batch_size"`    // seed.batch_size at seed time; resume skips committed batches by their original boundaries, so it must not change
 	SeededTuples int       `json:"seeded_tuples"` // high-water mark for resume; == TupleCount when complete
 	SeedComplete bool      `json:"seed_complete"`
 	SeedDuration string    `json:"seed_duration"`
@@ -39,9 +40,19 @@ func saveState(cfg *Config, st *State) error {
 	return os.WriteFile(cfg.StateFile, data, 0o644)
 }
 
-func validateResumeState(st State, tupleCount int) error {
+func validateResumeState(st State, tupleCount, batchSize int) error {
 	if st.TupleCount != tupleCount {
 		return fmt.Errorf("cannot resume: the seed changed since it was interrupted (was %d tuples, now %d) — `fgaperf cleanup` then `setup` fresh", st.TupleCount, tupleCount)
+	}
+	// Resume re-batches tuples[startIndex:] into seed.batch_size chunks and skips
+	// any batch the server rejects as already-committed. That skip is only safe
+	// while batch boundaries are identical across runs; a changed batch_size lets
+	// a new batch straddle an old boundary, and OpenFGA rejects the whole
+	// (transactional) batch wholesale — dropping its not-yet-written tuples with
+	// it and marking the seed complete with a hole. A recorded size of 0 is a
+	// pre-this-field state file; tolerate it rather than block a legacy resume.
+	if st.BatchSize != 0 && st.BatchSize != batchSize {
+		return fmt.Errorf("cannot resume: seed.batch_size changed since the seed was interrupted (was %d, now %d); resume relies on identical batch boundaries — `fgaperf cleanup` then `setup` fresh", st.BatchSize, batchSize)
 	}
 	if st.SeededTuples < 0 || st.SeededTuples > st.TupleCount {
 		return fmt.Errorf("cannot resume: state seeded_tuples %d is outside 0..%d", st.SeededTuples, st.TupleCount)
@@ -330,7 +341,7 @@ func setup(client *FGAClient, a *Analysis, cfg *Config, resume bool) (*State, er
 		if data, err := os.ReadFile(cfg.StateFile); err == nil {
 			var prev State
 			if json.Unmarshal(data, &prev) == nil && prev.StoreID != "" && !prev.SeedComplete {
-				if err := validateResumeState(prev, len(tuples)); err != nil {
+				if err := validateResumeState(prev, len(tuples), cfg.Seed.BatchSize); err != nil {
 					return nil, err
 				}
 				st = &prev
@@ -356,7 +367,7 @@ func setup(client *FGAClient, a *Analysis, cfg *Config, resume bool) (*State, er
 		}
 		fmt.Printf("model written: %s\n", modelID)
 		fmt.Printf("generated %d tuples across %d cohorts\n", len(tuples), cfg.Seed.Cohorts)
-		st = &State{StoreID: storeID, ModelID: modelID, TupleCount: len(tuples)}
+		st = &State{StoreID: storeID, ModelID: modelID, TupleCount: len(tuples), BatchSize: cfg.Seed.BatchSize}
 		// Persist a partial state up front so an interrupted seed is resumable.
 		if err := saveState(cfg, st); err != nil {
 			return nil, err

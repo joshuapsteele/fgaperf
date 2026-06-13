@@ -62,7 +62,7 @@ Checks carrying contextual tuples ran 1.00 ms slower at p50 and 2.00 ms slower a
 
 ## Errors
 
-*Failed requests grouped by class. Timeouts and 5xx point at server- or datastore-side trouble (look at the server-side view, or lower offered rate). 4xx and decode errors point at fgaperf or config (mismatched model, malformed contextual tuples). Connection errors usually mean the server restarted mid-run.*
+*Failed requests grouped by class. Timeouts and 5xx point at server- or datastore-side trouble (look at the server-side view, or lower offered rate). 4xx and decode errors point at fgaperf or config (mismatched model, malformed contextual tuples). Connection errors usually mean the server restarted mid-run. The `batch-item` class counts batch-check calls whose HTTP round trip succeeded but that carried at least one item-level error; their service latency is still included in the percentiles above, since the request itself completed.*
 
 | Class | Count |
 |---|---|
