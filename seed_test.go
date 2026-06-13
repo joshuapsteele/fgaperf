@@ -111,3 +111,99 @@ func TestContextualRelationsAreNotSeeded(t *testing.T) {
 		}
 	}
 }
+
+// The accept criterion for per-user-type fanout: a relation accepting
+// [user, group#member] can get group members but no direct users.
+func TestPerUserTypeFanoutOverride(t *testing.T) {
+	a := loadExampleModel(t)
+	cfg, _ := LoadConfigFile("")
+	cfg.Seed.Fanout = map[string]int{
+		"document#editor@user":         0,
+		"document#editor@group#member": 4,
+	}
+	w := NewWorld(a, cfg)
+
+	users, usersets := 0, 0
+	for _, tu := range w.GenerateTuples() {
+		if tu.Relation != "editor" || !strings.HasPrefix(tu.Object, "document:") {
+			continue
+		}
+		if strings.HasPrefix(tu.User, "user:") {
+			users++
+		}
+		if strings.HasSuffix(tu.User, "#member") {
+			usersets++
+		}
+	}
+	if users != 0 {
+		t.Errorf("document#editor got %d direct user tuples despite @user: 0", users)
+	}
+	if usersets == 0 {
+		t.Error("document#editor got no group#member tuples despite @group#member: 4")
+	}
+}
+
+func TestPerRelationWildcardProbability(t *testing.T) {
+	a := loadExampleModel(t)
+	cfg, _ := LoadConfigFile("") // global wildcard_probability defaults to 1.0
+	cfg.Seed.WildcardProbs = map[string]float64{"document#viewer": 0}
+	w := NewWorld(a, cfg)
+
+	for _, tu := range w.GenerateTuples() {
+		if strings.HasSuffix(tu.User, ":*") {
+			t.Fatalf("wildcard tuple generated despite per-relation probability 0: %+v", tu)
+		}
+	}
+}
+
+// The accept criterion for keys_distribution: condition map sizes follow a
+// configured bimodal distribution instead of one fixed count.
+func TestKeysDistributionBimodal(t *testing.T) {
+	a := loadExampleModel(t)
+	cfg, _ := LoadConfigFile("")
+	cfg.Conditions = map[string]CondConfig{
+		"has_scope": {ParamConfigs: map[string]ParamGenConfig{
+			"granted_scopes": {KeysDistribution: &KeysDistribution{
+				Values: []int{1, 8}, Weights: []float64{0.5, 0.5},
+			}},
+		}},
+	}
+	w := NewWorld(a, cfg)
+
+	sizes := map[int]int{}
+	for _, tu := range w.GenerateTuples() {
+		if tu.Condition == nil {
+			continue
+		}
+		scopes, ok := tu.Condition.Context["granted_scopes"].(map[string]any)
+		if !ok {
+			continue
+		}
+		sizes[len(scopes)]++
+	}
+	for n := range sizes {
+		if n != 1 && n != 8 {
+			t.Errorf("map size %d generated; distribution only allows 1 or 8", n)
+		}
+	}
+	if sizes[1] == 0 || sizes[8] == 0 {
+		t.Fatalf("bimodal distribution did not produce both modes: %v", sizes)
+	}
+}
+
+// Configs that don't use the new shaping knobs must consume the RNG exactly
+// as before: bare-key fanout and the global wildcard probability take the
+// same draws whether or not the per-type/per-relation code paths exist.
+func TestDefaultConfigIgnoresShapingKnobs(t *testing.T) {
+	a := loadExampleModel(t)
+	plain, _ := LoadConfigFile("")
+	knobbed, _ := LoadConfigFile("")
+	knobbed.Seed.Fanout = map[string]int{"document#editor@user": 2} // 2 == default fanout
+	knobbed.Seed.WildcardProbs = map[string]float64{"document#viewer": 1.0}
+
+	first := NewWorld(a, plain).GenerateTuples()
+	second := NewWorld(a, knobbed).GenerateTuples()
+	if !reflect.DeepEqual(first, second) {
+		t.Fatal("no-op shaping knobs changed the generated tuple graph")
+	}
+}

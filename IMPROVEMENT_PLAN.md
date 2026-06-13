@@ -393,7 +393,7 @@ bit-for-bit the original behavior. Verified live: weight 8 on
 `document#editor` among five targets produced a 66.3% request share
 (expected 8/12 ≈ 66.7%).
 
-### 12. Richer generation shapes: per-user-type fanout and value distributions
+### 12. Richer generation shapes: per-user-type fanout and value distributions ✅
 
 **Motivation.** Two real frictions encountered while tuning for an actual
 production model:
@@ -420,6 +420,25 @@ reorder existing RNG consumption for configs that don't use the new knobs
 **Accept.** A config can produce groups with user members but no service
 members, and a tuple set whose condition map sizes follow a configured
 bimodal distribution — verified by a unit test over generated tuples.
+
+**Done (2026-06-12).** `seed.fanout` keys accept an optional `@usertype`
+suffix (`document#editor@user: 0`, usersets as
+`document#editor@group#member: 4`); the bare `type#relation` key stays the
+default for unsuffixed user types. `seed.wildcard_probabilities` is a
+per-relation map overriding the global `wildcard_probability` scalar. Both
+are validated against the model: a suffix must name a user type the relation
+directly accepts, and a wildcard-probability key must name a relation that
+actually has a wildcard ref. `keys_distribution: {values: [...], weights:
+[...]}` on a condition param draws map/list sizes per tuple (empty weights =
+uniform; mutually exclusive with `keys`). Determinism is preserved by
+construction: the per-type fanout lookup and per-relation probability lookup
+replace constants without changing draw counts, and the distribution draw
+only consumes RNG when configured — a unit test confirms no-op knobs produce
+a byte-identical tuple graph. Unit tests cover the zero-direct-users /
+userset-only shape, per-relation wildcard suppression, and a bimodal 1-or-8
+map-size distribution; verified end-to-end with a shaped smoke config
+(suffixed fanout + per-relation wildcard prob + bimodal keys) and the plain
+example config, both with zero errors and zero mismatches.
 
 ### 13. Mismatch diagnostics ✅
 

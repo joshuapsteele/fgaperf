@@ -82,6 +82,14 @@ func TestConfigValidation(t *testing.T) {
 		"missing pool":       "conditions:\n  has_scope:\n    params:\n      scopes: {pool: nope}\n",
 		"negative rate":      "load:\n  rate: -5\n",
 		"zero concurrency":   "load:\n  concurrency: -1\n",
+		"empty fanout user type":     "seed:\n  fanout:\n    \"group#member@\": 3\n",
+		"bad wildcard prob key":      "seed:\n  wildcard_probabilities:\n    notarelation: 0.5\n",
+		"wildcard prob out of range": "seed:\n  wildcard_probabilities:\n    \"document#viewer\": 1.5\n",
+		"keys and keys_distribution": "conditions:\n  has_scope:\n    params:\n      granted_scopes: {keys: 4, keys_distribution: {values: [2, 8]}}\n",
+		"empty distribution values":  "conditions:\n  has_scope:\n    params:\n      granted_scopes: {keys_distribution: {values: []}}\n",
+		"mismatched weights":         "conditions:\n  has_scope:\n    params:\n      granted_scopes: {keys_distribution: {values: [2, 8], weights: [1]}}\n",
+		"nonpositive value":          "conditions:\n  has_scope:\n    params:\n      granted_scopes: {keys_distribution: {values: [0]}}\n",
+		"zero-sum weights":           "conditions:\n  has_scope:\n    params:\n      granted_scopes: {keys_distribution: {values: [2, 8], weights: [0, 0]}}\n",
 	}
 	for name, yaml := range cases {
 		path := filepath.Join(t.TempDir(), "config.yaml")
@@ -101,7 +109,8 @@ func TestValidateAgainstModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	good.Seed.Fanout = map[string]int{"document#viewer": 3}
+	good.Seed.Fanout = map[string]int{"document#viewer": 3, "document#viewer@user": 1, "document#viewer@group#member": 4}
+	good.Seed.WildcardProbs = map[string]float64{"document#viewer": 0.2}
 	good.Seed.Instances = map[string]int{"document": 10}
 	good.Probe.Targets = []TargetSpec{{Relation: "document#can_share", Weight: 1}}
 	good.Probe.SubjectTypes = []string{"user"}
@@ -118,6 +127,11 @@ func TestValidateAgainstModel(t *testing.T) {
 		func(c *Config) { c.Probe.SubjectTypes = []string{"robot"} },
 		func(c *Config) { c.Contextual.Relations = []string{"folder#active_context"} },
 		func(c *Config) { c.Conditions = map[string]CondConfig{"no_such_condition": {}} },
+		// suffix names a user type the relation does not directly accept
+		func(c *Config) { c.Seed.Fanout = map[string]int{"document#can_share@group#member": 3} },
+		// relation exists but has no wildcard ref
+		func(c *Config) { c.Seed.WildcardProbs = map[string]float64{"document#editor": 0.5} },
+		func(c *Config) { c.Seed.WildcardProbs = map[string]float64{"document#nope": 0.5} },
 	}
 	for i, mutate := range bad {
 		cfg, _ := LoadConfigFile("")

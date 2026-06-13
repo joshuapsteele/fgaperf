@@ -35,9 +35,15 @@ seed:
     group#member: 8
     folder#parent: 1 # folder nesting; links only point "downward", so no cycles
     document#parent: 1
+    # A `@usertype` suffix overrides fanout for just that user type of the
+    # relation (the bare key stays the default for the others), e.g.:
+    # document#editor@user: 0          # no direct editors...
+    # document#editor@group#member: 4  # ...4 editor groups per document
   batch_size: 100 # max tuples per Write call (server default cap)
   writers: 8
   wildcard_probability: 0.5 # chance each document gets a conditioned `user:*` viewer tuple
+  # wildcard_probabilities:  # per-relation overrides of the scalar above
+  #   document#viewer: 0.1
 
 # These relations are not written during setup. Probe records them on the
 # corpus entry, and load sends them on each Check/BatchCheck request as
@@ -57,6 +63,9 @@ conditions:
     params:
       granted_scopes: { pool: scopes, keys: 4 }
       required_scope: { pool: scopes }
+      # Instead of a fixed `keys`, draw map/list sizes per tuple from a
+      # weighted distribution (real datasets skew — most maps small, a few
+      # huge): granted_scopes: { pool: scopes, keys_distribution: { values: [2, 12], weights: [0.9, 0.1] } }
 
 pools:
   scopes:

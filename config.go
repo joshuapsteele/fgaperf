@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"os"
 	"strings"
 	"time"
@@ -44,10 +45,15 @@ type SeedConfig struct {
 	DefaultCount  int            `yaml:"default_instances"`
 	Instances     map[string]int `yaml:"instances"`      // per-type instance counts
 	DefaultFanout int            `yaml:"default_fanout"` // tuples per (object, relation, user type)
-	Fanout        map[string]int `yaml:"fanout"`         // overrides keyed "type#relation"
-	BatchSize     int            `yaml:"batch_size"`     // tuples per Write call (server default max: 100)
-	Writers       int            `yaml:"writers"`        // concurrent Write workers
-	WildcardProb  float64        `yaml:"wildcard_probability"`
+	// Fanout overrides are keyed "type#relation" (every accepted user type)
+	// or "type#relation@usertype" (just that user type; usersets are named
+	// "type#relation@group#member"). The bare key is the default for user
+	// types without a suffixed override.
+	Fanout        map[string]int     `yaml:"fanout"`
+	BatchSize     int                `yaml:"batch_size"` // tuples per Write call (server default max: 100)
+	Writers       int                `yaml:"writers"`    // concurrent Write workers
+	WildcardProb  float64            `yaml:"wildcard_probability"`
+	WildcardProbs map[string]float64 `yaml:"wildcard_probabilities"` // per-relation overrides keyed "type#relation"
 }
 
 type ContextualConfig struct {
@@ -130,7 +136,36 @@ type CondConfig struct {
 
 type ParamGenConfig struct {
 	Pool string `yaml:"pool"`
-	Keys int    `yaml:"keys"` // entries for map/list params
+	Keys int    `yaml:"keys"` // fixed entry count for map/list params
+	// KeysDistribution draws the entry count per tuple instead, so one run
+	// can mix mostly-small and occasionally-huge maps the way real datasets
+	// skew. Mutually exclusive with keys.
+	KeysDistribution *KeysDistribution `yaml:"keys_distribution"`
+}
+
+// KeysDistribution is a weighted discrete distribution over map/list sizes.
+// Empty weights means uniform over values.
+type KeysDistribution struct {
+	Values  []int     `yaml:"values"`
+	Weights []float64 `yaml:"weights"`
+}
+
+func (d *KeysDistribution) draw(rng *rand.Rand) int {
+	if len(d.Weights) == 0 {
+		return d.Values[rng.Intn(len(d.Values))]
+	}
+	total := 0.0
+	for _, w := range d.Weights {
+		total += w
+	}
+	x := rng.Float64() * total
+	for i, w := range d.Weights {
+		x -= w
+		if x < 0 {
+			return d.Values[i]
+		}
+	}
+	return d.Values[len(d.Values)-1]
 }
 
 type PoolConfig struct {
@@ -195,17 +230,23 @@ func (c *Config) validate() error {
 			return err
 		}
 	}
-	for _, group := range []struct {
-		name string
-		keys []string
-	}{
-		{"seed.fanout", mapKeys(c.Seed.Fanout)},
-		{"contextual.relations", c.Contextual.Relations},
-	} {
-		for _, k := range group.keys {
-			if !isTypeRelation(k) {
-				return fmt.Errorf("%s key %q must be of the form type#relation", group.name, k)
-			}
+	for k := range c.Seed.Fanout {
+		rel, userType := splitFanoutKey(k)
+		if !isTypeRelation(rel) || (strings.Contains(k, "@") && userType == "") {
+			return fmt.Errorf("seed.fanout key %q must be of the form type#relation or type#relation@usertype", k)
+		}
+	}
+	for k, v := range c.Seed.WildcardProbs {
+		if !isTypeRelation(k) {
+			return fmt.Errorf("seed.wildcard_probabilities key %q must be of the form type#relation", k)
+		}
+		if err := prob("seed.wildcard_probabilities."+k, v); err != nil {
+			return err
+		}
+	}
+	for _, k := range c.Contextual.Relations {
+		if !isTypeRelation(k) {
+			return fmt.Errorf("contextual.relations key %q must be of the form type#relation", k)
 		}
 	}
 	for _, t := range c.Probe.Targets {
@@ -218,11 +259,37 @@ func (c *Config) validate() error {
 	}
 	for cond, cc := range c.Conditions {
 		for param, pc := range cc.ParamConfigs {
-			if pc.Pool == "" {
-				continue
+			if pc.Pool != "" {
+				if _, ok := c.Pools[pc.Pool]; !ok {
+					return fmt.Errorf("conditions.%s.params.%s references pool %q, which is not defined under pools", cond, param, pc.Pool)
+				}
 			}
-			if _, ok := c.Pools[pc.Pool]; !ok {
-				return fmt.Errorf("conditions.%s.params.%s references pool %q, which is not defined under pools", cond, param, pc.Pool)
+			if d := pc.KeysDistribution; d != nil {
+				name := fmt.Sprintf("conditions.%s.params.%s.keys_distribution", cond, param)
+				if pc.Keys > 0 {
+					return fmt.Errorf("conditions.%s.params.%s sets both keys and keys_distribution; pick one", cond, param)
+				}
+				if len(d.Values) == 0 {
+					return fmt.Errorf("%s.values must not be empty", name)
+				}
+				if len(d.Weights) > 0 && len(d.Weights) != len(d.Values) {
+					return fmt.Errorf("%s has %d weights for %d values", name, len(d.Weights), len(d.Values))
+				}
+				total := 0.0
+				for i, v := range d.Values {
+					if v <= 0 {
+						return fmt.Errorf("%s.values must all be positive, got %d", name, v)
+					}
+					if len(d.Weights) > 0 {
+						if d.Weights[i] < 0 {
+							return fmt.Errorf("%s.weights must all be >= 0, got %v", name, d.Weights[i])
+						}
+						total += d.Weights[i]
+					}
+				}
+				if len(d.Weights) > 0 && total <= 0 {
+					return fmt.Errorf("%s.weights must sum to a positive value", name)
+				}
 			}
 		}
 	}
@@ -286,17 +353,47 @@ func (c *Config) validateAgainstModel(a *Analysis) error {
 			return fmt.Errorf("seed.instances names type %q, which is not in the model", t)
 		}
 	}
-	for _, group := range []struct {
-		name string
-		keys []string
-	}{
-		{"seed.fanout", mapKeys(c.Seed.Fanout)},
-		{"contextual.relations", c.Contextual.Relations},
-	} {
-		for _, k := range group.keys {
-			if !relations[k] {
-				return fmt.Errorf("%s names relation %q, which is not in the model", group.name, k)
+	for k := range c.Seed.Fanout {
+		rel, userType := splitFanoutKey(k)
+		if !relations[rel] {
+			return fmt.Errorf("seed.fanout names relation %q, which is not in the model", rel)
+		}
+		if userType == "" {
+			continue
+		}
+		typ, relName, _ := strings.Cut(rel, "#")
+		accepted := false
+		for _, ref := range a.DirectRefs[typ][relName] {
+			name := ref.Type
+			if ref.Relation != "" {
+				name += "#" + ref.Relation
 			}
+			if name == userType {
+				accepted = true
+			}
+		}
+		if !accepted {
+			return fmt.Errorf("seed.fanout key %q: relation %s does not directly accept user type %q", k, rel, userType)
+		}
+	}
+	for k := range c.Seed.WildcardProbs {
+		if !relations[k] {
+			return fmt.Errorf("seed.wildcard_probabilities names relation %q, which is not in the model", k)
+		}
+		typ, relName, _ := strings.Cut(k, "#")
+		hasWildcard := false
+		for _, ref := range a.DirectRefs[typ][relName] {
+			if ref.Wildcard != nil {
+				hasWildcard = true
+			}
+		}
+		if !hasWildcard {
+			return fmt.Errorf("seed.wildcard_probabilities names relation %q, which does not accept a wildcard", k)
+		}
+	}
+	for _, k := range c.Contextual.Relations {
+		if !relations[k] {
+			return fmt.Errorf("contextual.relations names relation %q, which is not in the model", k)
 		}
 	}
 	for _, t := range c.Probe.Targets {
@@ -317,12 +414,15 @@ func (c *Config) validateAgainstModel(a *Analysis) error {
 	return nil
 }
 
-func mapKeys(m map[string]int) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
+// splitFanoutKey splits "type#relation@usertype" into the relation key and
+// the optional user-type suffix ("" when absent). Userset suffixes keep
+// their own #: "document#viewer@group#member" -> ("document#viewer",
+// "group#member").
+func splitFanoutKey(key string) (rel, userType string) {
+	if i := strings.Index(key, "@"); i >= 0 {
+		return key[:i], key[i+1:]
 	}
-	return out
+	return key, ""
 }
 
 func isTypeRelation(key string) bool {

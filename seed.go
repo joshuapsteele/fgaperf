@@ -114,16 +114,20 @@ func (w *World) GenerateTuples() []TupleKey {
 			if contextual[typ+"#"+rel] {
 				continue
 			}
-			fanout := w.cfg.Seed.DefaultFanout
+			relFanout := w.cfg.Seed.DefaultFanout
 			if v, ok := w.cfg.Seed.Fanout[typ+"#"+rel]; ok {
-				fanout = v
+				relFanout = v
+			}
+			wildcardProb := w.cfg.Seed.WildcardProb
+			if v, ok := w.cfg.Seed.WildcardProbs[typ+"#"+rel]; ok {
+				wildcardProb = v
 			}
 			for _, obj := range w.Instances[typ] {
 				cohort := w.Cohort[obj]
 				objIdx := instanceIndex(obj)
 				for _, ref := range rels[rel] {
 					if ref.Wildcard != nil {
-						if w.rng.Float64() <= w.cfg.Seed.WildcardProb {
+						if w.rng.Float64() <= wildcardProb {
 							add(TupleKey{
 								User:      ref.Type + ":*",
 								Relation:  rel,
@@ -132,6 +136,16 @@ func (w *World) GenerateTuples() []TupleKey {
 							})
 						}
 						continue
+					}
+					// Per-user-type override: "type#relation@usertype" beats
+					// the bare "type#relation" key for this ref only.
+					fanout := relFanout
+					suffix := ref.Type
+					if ref.Relation != "" {
+						suffix += "#" + ref.Relation
+					}
+					if v, ok := w.cfg.Seed.Fanout[typ+"#"+rel+"@"+suffix]; ok {
+						fanout = v
 					}
 					for i := 0; i < fanout; i++ {
 						var subject string
@@ -288,6 +302,7 @@ func (w *World) genValue(condName, param string, t ParamTypeRef) any {
 func (w *World) genValueWith(rng *rand.Rand, condName, param string, t ParamTypeRef) any {
 	poolName := "default"
 	keys := 4
+	var dist *KeysDistribution
 	if cc, ok := w.cfg.Conditions[condName]; ok {
 		if pc, ok := cc.ParamConfigs[param]; ok {
 			if pc.Pool != "" {
@@ -296,10 +311,20 @@ func (w *World) genValueWith(rng *rand.Rand, condName, param string, t ParamType
 			if pc.Keys > 0 {
 				keys = pc.Keys
 			}
+			dist = pc.KeysDistribution
 		}
 	}
 	pool := w.pool(poolName)
 	pick := func() string { return pool[rng.Intn(len(pool))] }
+	// keysFor draws per value only when a distribution is configured, so
+	// configs without one consume the RNG exactly as before (determinism
+	// contract: same seed, same world).
+	keysFor := func() int {
+		if dist != nil {
+			return dist.draw(rng)
+		}
+		return keys
+	}
 	switch t.TypeName {
 	case "TYPE_NAME_STRING":
 		return pick()
@@ -314,14 +339,16 @@ func (w *World) genValueWith(rng *rand.Rand, condName, param string, t ParamType
 	case "TYPE_NAME_DURATION":
 		return "60s"
 	case "TYPE_NAME_LIST":
-		out := make([]any, 0, keys)
-		for i := 0; i < keys; i++ {
+		n := keysFor()
+		out := make([]any, 0, n)
+		for i := 0; i < n; i++ {
 			out = append(out, pick())
 		}
 		return out
 	case "TYPE_NAME_MAP":
+		n := keysFor()
 		out := map[string]any{}
-		for len(out) < keys && len(out) < len(pool) {
+		for len(out) < n && len(out) < len(pool) {
 			out[pick()] = "granted"
 		}
 		return out
