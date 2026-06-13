@@ -101,6 +101,14 @@ observation #1.**
 
 ### 2. Result baseline + regression substrate
 
+Status: **Complete** (2026-06-13) — added compact baseline JSON export via
+`fgaperf baseline save <results.json>`, config fingerprints/random seed capture,
+and `fgaperf compare -against-baseline <baseline.json> <results.json>` with
+percent regression gates (`p99=10%,throughput=-5%` by default). Comparison
+caveats/config drift are warnings; threshold breaches return non-zero and name
+the regressed metric/target. Verification: `go vet ./...`;
+`go test -count=1 ./...`.
+
 Motivation: each run emits a results JSON, but nothing pins a baseline or gates a
 regression. A baseline format plus a comparison-against-baseline command is the
 substrate both the CI gate (item 7) and trend/significance work (item 10) need.

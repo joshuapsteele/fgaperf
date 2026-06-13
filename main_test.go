@@ -123,13 +123,23 @@ openfga:
 	if err := os.WriteFile(reportB, reportData, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	baselineData, err := json.Marshal(baselineFromReport(reportA, sampleReport(), sampleReport().GeneratedAt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	baselinePath := filepath.Join(dir, "baseline.json")
+	if err := os.WriteFile(baselinePath, baselineData, 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	commands := [][]string{
 		{"plan", "-config", cfgPath},
 		{"validate", "-config", cfgPath},
 		{"inspect", "-config", cfgPath},
 		{"inspect", "-config", cfgPath, "-json"},
+		{"baseline", "-config", cfgPath, "save", reportA},
 		{"compare", "-config", cfgPath, reportA, reportB},
+		{"compare", "-config", cfgPath, "-against-baseline", baselinePath, reportA},
 	}
 	for _, args := range commands {
 		runCLIHelper(t, args...)

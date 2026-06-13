@@ -78,10 +78,16 @@ var commandDocs = map[string]commandDoc{
 		Gotcha:  "`-all-stores` deletes by name, not by ID; use it when the state file is gone.",
 	},
 	"compare": {
-		Summary: "render two results JSON files side by side",
-		Details: "Writes a Markdown comparison with overall/per-relation deltas, server-side deltas, config differences, and comparability caveats.",
+		Summary: "render two results JSON files side by side, or gate against a baseline",
+		Details: "Writes a Markdown comparison with overall/per-relation deltas, server-side deltas, config differences, and comparability caveats. With -against-baseline, compares one results JSON to a compact saved baseline and exits non-zero when any configured regression threshold is exceeded.",
+		Flags:   []string{"config", "output-dir", "against-baseline", "max-regression"},
+		Example: "./fgaperf compare -config examples/config.yaml results/results-A.json results/results-B.json\n./fgaperf compare -against-baseline results/baseline.json -max-regression p99=10%,throughput=-5% results/results-new.json",
+	},
+	"baseline": {
+		Summary: "save a compact regression baseline from a results JSON",
+		Details: "Reads a fgaperf results JSON and writes a compact baseline JSON containing the run shape, config fingerprint, random seed, throughput, key latency percentiles, per-target p99 inputs, and server-side datastore cost when present.",
 		Flags:   []string{"config", "output-dir"},
-		Example: "./fgaperf compare -config examples/config.yaml results/results-A.json results/results-B.json",
+		Example: "./fgaperf baseline save results/results-20260613-203758.json\n./fgaperf baseline save -output-dir results/baselines results/results-20260613-203758.json",
 	},
 	"gen-config": {
 		Summary: "emit an annotated starter config from a compiled model",
@@ -126,6 +132,9 @@ func printCommandHelp(w io.Writer, cmd string, fs *flag.FlagSet) {
 	fmt.Fprintln(w, "Usage:")
 	if cmd == "compare" {
 		fmt.Fprintln(w, "  fgaperf compare [flags] <results-a.json> <results-b.json>")
+		fmt.Fprintln(w, "  fgaperf compare -against-baseline <baseline.json> [flags] <results.json>")
+	} else if cmd == "baseline" {
+		fmt.Fprintln(w, "  fgaperf baseline [flags] save [save-flags] <results.json>")
 	} else {
 		fmt.Fprintf(w, "  fgaperf %s [flags]\n", cmd)
 	}

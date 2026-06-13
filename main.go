@@ -10,6 +10,7 @@ package main
 //	fgaperf plan  -config config.yaml   preview seeded tuple counts; no server
 //	fgaperf cleanup -config config.yaml delete the store recorded in the state file
 //	fgaperf compare a.json b.json       render two results files side by side
+//	fgaperf baseline save results.json  save compact regression baseline
 //	fgaperf gen-config -model model.json  emit a starter config.yaml on stdout
 
 import (
@@ -112,6 +113,8 @@ func main() {
 	endpointFlag := fs.String("endpoint", "", "override load.endpoint (check|batch-check|list-objects|list-users)")
 	consistencyFlag := fs.String("consistency", "", "override load.consistency (MINIMIZE_LATENCY|HIGHER_CONSISTENCY)")
 	outDirFlag := fs.String("output-dir", "", "override output_dir")
+	againstBaseline := fs.String("against-baseline", "", "compare: compare one results JSON against a saved baseline")
+	maxRegression := fs.String("max-regression", defaultMaxRegression, "compare -against-baseline: comma-separated thresholds, e.g. p99=10%,throughput=-5%")
 	fs.Parse(os.Args[2:])
 
 	cfgFile := *cfgPath
@@ -195,8 +198,27 @@ func main() {
 		checkWithConfig(runAll(newClient(), analysis, cfg, *keep || cfg.KeepStore), cfg)
 	case "cleanup":
 		checkWithConfig(cleanup(newClient(), cfg, *allStores), cfg)
+	case "baseline":
+		args := fs.Args()
+		if len(args) < 1 || args[0] != "save" {
+			fail("usage: fgaperf baseline save <results.json>")
+		}
+		saveFS := flag.NewFlagSet("baseline save", flag.ExitOnError)
+		saveOutDir := saveFS.String("output-dir", cfg.OutputDir, "override output_dir")
+		saveFS.Parse(args[1:])
+		if saveFS.NArg() != 1 {
+			fail("usage: fgaperf baseline save [-output-dir dir] <results.json>")
+		}
+		checkWithConfig(saveBaseline(saveFS.Arg(0), *saveOutDir), cfg)
 	case "compare":
 		args := fs.Args()
+		if *againstBaseline != "" {
+			if len(args) != 1 {
+				fail("usage: fgaperf compare -against-baseline <baseline.json> [flags] <results.json>")
+			}
+			checkWithConfig(compareAgainstBaseline(*againstBaseline, args[0], cfg.OutputDir, *maxRegression), cfg)
+			return
+		}
 		if len(args) != 2 {
 			fail("usage: fgaperf compare <results-a.json> <results-b.json>")
 		}
