@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -107,5 +109,77 @@ func TestCheckRequestSerializesContextualTuples(t *testing.T) {
 	tuples, ok := ctx["tuple_keys"].([]any)
 	if !ok || len(tuples) != 1 {
 		t.Fatalf("tuple_keys missing or wrong size: %#v", ctx["tuple_keys"])
+	}
+}
+
+// OIDC: the client must fetch a client-credentials token and attach it as a
+// bearer to every API request, forwarding audience and scope.
+func TestOIDCTokenFlow(t *testing.T) {
+	var gotGrant, gotID, gotSecret, gotAudience, gotScope string
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.ParseForm()
+		gotGrant = r.FormValue("grant_type")
+		gotID = r.FormValue("client_id")
+		gotSecret = r.FormValue("client_secret")
+		gotAudience = r.FormValue("audience")
+		gotScope = r.FormValue("scope")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"access_token":"tok-123","expires_in":3600,"token_type":"Bearer"}`)
+	}))
+	defer tokenSrv.Close()
+
+	var gotAuth string
+	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		fmt.Fprint(w, `{"allowed":true}`)
+	}))
+	defer apiSrv.Close()
+
+	client := NewFGAClient(OpenFGAConfig{
+		APIURL:  apiSrv.URL,
+		Timeout: 5 * time.Second,
+		OIDC: &OIDCConfig{
+			TokenURL:     tokenSrv.URL,
+			ClientID:     "id-1",
+			ClientSecret: "secret-1",
+			Audience:     "https://api.example.com",
+			Scopes:       []string{"read", "write"},
+		},
+	}, 4)
+	if _, err := client.Check("store", CheckRequest{}); err != nil {
+		t.Fatalf("check failed: %v", err)
+	}
+	if gotAuth != "Bearer tok-123" {
+		t.Errorf("Authorization header = %q, want Bearer tok-123", gotAuth)
+	}
+	if gotGrant != "client_credentials" || gotID != "id-1" || gotSecret != "secret-1" {
+		t.Errorf("grant=%q id=%q secret=%q", gotGrant, gotID, gotSecret)
+	}
+	if gotAudience != "https://api.example.com" || gotScope != "read write" {
+		t.Errorf("audience=%q scope=%q", gotAudience, gotScope)
+	}
+}
+
+// A failing token endpoint must surface a clear OIDC error on the request,
+// not a bare 401.
+func TestOIDCTokenError(t *testing.T) {
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"error":"invalid_client"}`)
+	}))
+	defer tokenSrv.Close()
+	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"allowed":true}`)
+	}))
+	defer apiSrv.Close()
+
+	client := NewFGAClient(OpenFGAConfig{
+		APIURL:  apiSrv.URL,
+		Timeout: 5 * time.Second,
+		OIDC:    &OIDCConfig{TokenURL: tokenSrv.URL, ClientID: "id", ClientSecret: "bad"},
+	}, 4)
+	_, err := client.Check("store", CheckRequest{})
+	if err == nil || !strings.Contains(err.Error(), "OIDC") {
+		t.Errorf("expected an OIDC auth error, got %v", err)
 	}
 }

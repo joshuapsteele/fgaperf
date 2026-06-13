@@ -143,6 +143,40 @@ func TestValidateAgainstModel(t *testing.T) {
 	}
 }
 
+// OIDC config: incomplete or conflicting auth must fail; a valid block must
+// redact the client secret in the resolved snapshot.
+func TestOIDCConfig(t *testing.T) {
+	bad := map[string]string{
+		"oidc missing fields": "openfga:\n  oidc:\n    token_url: https://issuer/token\n",
+		"oidc and api_token":  "openfga:\n  api_token: psk\n  oidc:\n    token_url: https://issuer/token\n    client_id: id\n    client_secret: sec\n",
+	}
+	for name, yaml := range bad {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadConfigFile(path); err == nil {
+			t.Errorf("%s: loaded without error", name)
+		}
+	}
+
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	yaml := "openfga:\n  oidc:\n    token_url: https://issuer/token\n    client_id: id\n    client_secret: super-secret\n"
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfigFile(path)
+	if err != nil {
+		t.Fatalf("valid OIDC config rejected: %v", err)
+	}
+	resolved := cfg.Resolved()
+	of := resolved["openfga"].(map[string]any)
+	oidc := of["oidc"].(map[string]any)
+	if oidc["client_secret"] != "REDACTED" {
+		t.Errorf("client_secret not redacted: %v", oidc["client_secret"])
+	}
+}
+
 // list-objects and list-users are valid load endpoints.
 func TestListEndpointsValid(t *testing.T) {
 	for _, ep := range []string{"check", "batch-check", "list-objects", "list-users"} {

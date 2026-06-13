@@ -39,6 +39,7 @@ naming the bad key.
 | `openfga.api_url` | `http://localhost:8080` | OpenFGA HTTP API base URL. |
 | `openfga.store_name` | `fgaperf` | Name used when creating the store. `cleanup -all-stores` matches on this. |
 | `openfga.api_token` | unset | Pre-shared API token when `OPENFGA_AUTHN_METHOD=preshared`. |
+| `openfga.oidc` | unset | OIDC client-credentials auth for managed/cloud OpenFGA (mutually exclusive with `api_token`). Sub-keys: `token_url`, `client_id`, `client_secret` (required), `audience`, `scopes` (optional). The token is fetched and refreshed in the background, off the request hot path; `client_secret` is redacted in the results snapshot. |
 | `openfga.timeout` | `10s` | Per-request HTTP timeout. Raise if your real production timeout is higher, or to stop spurious timeouts dominating an under-provisioned datastore run. |
 
 ## `seed` — tuple graph generation

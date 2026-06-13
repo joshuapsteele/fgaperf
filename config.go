@@ -36,8 +36,20 @@ type Config struct {
 type OpenFGAConfig struct {
 	APIURL    string        `yaml:"api_url"`
 	StoreName string        `yaml:"store_name"`
-	APIToken  string        `yaml:"api_token"`
+	APIToken  string        `yaml:"api_token"` // pre-shared key auth
+	OIDC      *OIDCConfig   `yaml:"oidc"`      // OIDC client-credentials auth (mutually exclusive with api_token)
 	Timeout   time.Duration `yaml:"timeout"`
+}
+
+// OIDCConfig configures OAuth2 client-credentials auth for managed/cloud
+// OpenFGA. The token is fetched and refreshed in the background, off the
+// request hot path.
+type OIDCConfig struct {
+	TokenURL     string   `yaml:"token_url"` // OAuth2 token endpoint
+	ClientID     string   `yaml:"client_id"`
+	ClientSecret string   `yaml:"client_secret"`
+	Audience     string   `yaml:"audience"` // optional
+	Scopes       []string `yaml:"scopes"`   // optional
 }
 
 type SeedConfig struct {
@@ -339,6 +351,14 @@ func (c *Config) validate() error {
 	if c.Load.SLOP99 < 0 {
 		return fmt.Errorf("load.slo_p99 must be >= 0, got %v", c.Load.SLOP99)
 	}
+	if o := c.OpenFGA.OIDC; o != nil {
+		if c.OpenFGA.APIToken != "" {
+			return fmt.Errorf("openfga.api_token and openfga.oidc are mutually exclusive; pick one auth method")
+		}
+		if o.TokenURL == "" || o.ClientID == "" || o.ClientSecret == "" {
+			return fmt.Errorf("openfga.oidc requires token_url, client_id, and client_secret")
+		}
+	}
 	return nil
 }
 
@@ -557,6 +577,11 @@ func (c *Config) Resolved() map[string]any {
 	if of, ok := m["openfga"].(map[string]any); ok {
 		if tok, ok := of["api_token"].(string); ok && tok != "" {
 			of["api_token"] = "REDACTED"
+		}
+		if oidc, ok := of["oidc"].(map[string]any); ok {
+			if sec, ok := oidc["client_secret"].(string); ok && sec != "" {
+				oidc["client_secret"] = "REDACTED"
+			}
 		}
 	}
 	return m

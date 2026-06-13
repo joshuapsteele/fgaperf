@@ -28,6 +28,16 @@ openfga:
   # OPENFGA_AUTHN_METHOD=preshared. Leave unset for the docker-compose stack.
   # api_token: <secret>
 
+  # OIDC client-credentials auth, for managed/cloud OpenFGA. Mutually exclusive
+  # with api_token. The token is fetched and refreshed in the background, off
+  # the request hot path. client_secret is redacted in the results snapshot.
+  # oidc:
+  #   token_url: https://your-issuer/oauth/token
+  #   client_id: <client-id>
+  #   client_secret: <client-secret>
+  #   audience: https://your-fga-api/        # optional
+  #   scopes: [read, write]                  # optional
+
   # Per-request HTTP timeout. Long checks against a slow datastore can exceed
   # the default; raise this before assuming the server is broken.
   timeout: 10s

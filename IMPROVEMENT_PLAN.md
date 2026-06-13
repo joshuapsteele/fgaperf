@@ -569,12 +569,27 @@ pulls in protobuf deps — weigh against the "thin client" principle and keep it
 strictly optional at build or config level. **Files:** `client.go`, new
 `client_grpc.go`, `config.go`.
 
-### 19. OIDC auth
+### 19. OIDC auth ✅
 
 Only pre-shared-key auth is supported. Managed/cloud FGA deployments use OIDC
 client-credentials. Token fetch + refresh outside the hot path (background
 refresh well before expiry so no request ever pays the token cost).
 **Files:** `client.go`, `config.go`.
+
+**Done (2026-06-13).** `openfga.oidc` (`token_url`, `client_id`,
+`client_secret`, optional `audience`/`scopes`) selects OAuth2
+client-credentials auth, mutually exclusive with `api_token` (validated). A
+`tokenSource` in `client.go` does a synchronous initial fetch in
+`NewFGAClient`, then refreshes ~30s before expiry from a background goroutine,
+so the request path only ever reads a cached token under a read lock — no
+request pays the fetch cost. A never-succeeded token surfaces the real fetch
+error on the request (`OIDC auth: …`) instead of a bare 401. Token fetches use
+a separate `http.Client`, not the tuned load transport. `client_secret` is
+redacted in the resolved-config snapshot. Documented in the annotated example
+config and the configuration reference. Tests (`TestOIDCTokenFlow`,
+`TestOIDCTokenError`, `TestOIDCConfig`) use httptest token/API servers to assert
+the bearer is attached, audience/scope are forwarded, fetch failures surface
+clearly, and the secret is redacted; `-race` clean.
 
 ### 20. Seeding at scale ✅
 
