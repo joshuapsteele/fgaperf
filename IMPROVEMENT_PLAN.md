@@ -559,7 +559,7 @@ annotated example config and the configuration reference. Unit test
 `TestSampleWriterGzipRoundTrip` covers the gzip round-trip and append/concat;
 verified end-to-end (20k records, valid JSONL, gzip-decodable).
 
-### 18. gRPC client option
+### 18. gRPC client option — deferred (2026-06-13)
 
 Production callers typically use gRPC SDKs; HTTP-only measurement may
 overstate latency. The bundled compose already exposes `:8081`. Keep the HTTP
@@ -568,6 +568,18 @@ client as default and the abstraction minimal: an interface over
 pulls in protobuf deps — weigh against the "thin client" principle and keep it
 strictly optional at build or config level. **Files:** `client.go`, new
 `client_grpc.go`, `config.go`.
+
+**Deferred pending owner decision (2026-06-13).** Unlike every other P2 item,
+this one fundamentally changes the project's dependency posture: today `go.mod`
+has a single dependency (`gopkg.in/yaml.v3`) and `go.sum` is 3 lines. A gRPC
+client pulls in `google.golang.org/grpc`, `google.golang.org/protobuf`, and the
+OpenFGA proto module (`github.com/openfga/api/proto` or the Go SDK), growing
+`go.sum` to hundreds of lines and broadening the supply-chain surface on a
+public repo. A `grpc` build tag would keep the *default binary* lean but does
+not keep the deps out of `go.mod`/`go.sum` (`go mod tidy` tracks tagged imports
+too). Because this is a one-way, outward-facing decision in tension with design
+principle #3 (thin hot path, no SDK), it was held for explicit sign-off rather
+than pulled in unilaterally. The other eight P2 breadth items are complete.
 
 ### 19. OIDC auth ✅
 
