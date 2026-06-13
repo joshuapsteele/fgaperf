@@ -467,7 +467,7 @@ to the 18 distinct flipped checks, all correctly attributed.
 
 ## P2 — Breadth and ergonomics
 
-### 14. Additional endpoints: `list-objects`, `list-users`
+### 14. Additional endpoints: `list-objects`, `list-users` ✅
 
 `ListObjects` is OpenFGA's notoriously expensive query and a common production
 pain point; a perf tool that can't measure it is incomplete. Reuse corpus
@@ -478,6 +478,26 @@ spot-checks against probe-known allowed pairs (each corpus entry's object
 should appear in the listing when expected=true and consistency allows).
 **Files:** `client.go`, `load.go`, `config.go` (`load.endpoint` enum),
 `report.go`.
+
+**Done (2026-06-13).** `load.endpoint` accepts `list-objects` and `list-users`
+alongside `check`/`batch-check`. `client.go` gained `ListObjects`/`ListUsers`
+(the latter handles the OpenFGA API quirk where ListUsers takes contextual
+tuples as a bare array, not a `tuple_keys` envelope). The load workers reuse
+each corpus entry's (user, relation, object) triple — list-objects asks "which
+`<object type>` can `<user>` `<relation>`?" and list-users the inverse — passing
+through the entry's contextual tuples and context. `Sample.ResultCount` carries
+the returned-set size; the report adds a `result_counts` distribution
+(mean/p50/p90/p99/max, empty-response rate, total) and a "Result-set sizes"
+findings section, since result-set size — not latency alone — is the headline
+cost driver for these endpoints. `verify_results` is a best-effort spot-check
+(the entry's own object/user should appear in its own listing iff probe found it
+allowed; a typed wildcard counts as present for list-users), explicitly
+caveated as truncation-prone. Headline throughput nouns adapt
+(`endpointNoun`). Verified end-to-end against the compose stack: both endpoints
+ran with zero errors and zero verification mismatches, reporting result-set
+distributions (list-objects mean 3.0/max 15; list-users mean 2.4 with 25.6%
+empty). Unit tests cover `summarizeCounts`, `endpointNoun`, and endpoint
+validation; `go test -race` clean.
 
 ### 15. CLI flag overrides for common knobs ✅
 

@@ -123,7 +123,7 @@ write churn).
 
 | Field | Default | Description |
 |---|---|---|
-| `load.endpoint` | `check` | `check` (one tuple per HTTP request) or `batch-check` (many per request). |
+| `load.endpoint` | `check` | `check` (one tuple per HTTP request), `batch-check` (many per request), `list-objects` ("which objects of a type can this user access?"), or `list-users` ("which users can access this object?"). The list endpoints reuse the corpus's (user, relation, object) triples and add a result-set-size distribution to the findings; their `verify_results` is a best-effort spot-check (each entry's own object/user should appear in its own listing) that can false-positive under OpenFGA's result-cap truncation. |
 | `load.batch_size` | `20` | Tuples per `batch-check` request. Ignored for `check`. |
 | `load.concurrency` | `16` | Parallel workers issuing requests. Cap by the concurrency of your real callers. |
 | `load.rate` | `0` | Fixed offered requests/sec. `0` = closed loop. Mutually exclusive with `load.sweep`. |

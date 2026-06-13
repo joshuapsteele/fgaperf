@@ -73,16 +73,16 @@ func TestConfigRejectsUnknownKeys(t *testing.T) {
 
 func TestConfigValidation(t *testing.T) {
 	cases := map[string]string{
-		"bad consistency":    "load:\n  consistency: EVENTUAL\n",
-		"bad endpoint":       "load:\n  endpoint: expand\n",
-		"bad probability":    "seed:\n  wildcard_probability: 1.5\n",
-		"bad allowed_ratio":  "probe:\n  allowed_ratio: 2\n",
-		"bad fanout key":     "seed:\n  fanout:\n    notarelation: 3\n",
-		"bad target key":     "probe:\n  targets: [document]\n",
-		"bad contextual key": "contextual:\n  relations: [viewer]\n",
-		"missing pool":       "conditions:\n  has_scope:\n    params:\n      scopes: {pool: nope}\n",
-		"negative rate":      "load:\n  rate: -5\n",
-		"zero concurrency":   "load:\n  concurrency: -1\n",
+		"bad consistency":            "load:\n  consistency: EVENTUAL\n",
+		"bad endpoint":               "load:\n  endpoint: expand\n",
+		"bad probability":            "seed:\n  wildcard_probability: 1.5\n",
+		"bad allowed_ratio":          "probe:\n  allowed_ratio: 2\n",
+		"bad fanout key":             "seed:\n  fanout:\n    notarelation: 3\n",
+		"bad target key":             "probe:\n  targets: [document]\n",
+		"bad contextual key":         "contextual:\n  relations: [viewer]\n",
+		"missing pool":               "conditions:\n  has_scope:\n    params:\n      scopes: {pool: nope}\n",
+		"negative rate":              "load:\n  rate: -5\n",
+		"zero concurrency":           "load:\n  concurrency: -1\n",
 		"empty fanout user type":     "seed:\n  fanout:\n    \"group#member@\": 3\n",
 		"bad wildcard prob key":      "seed:\n  wildcard_probabilities:\n    notarelation: 0.5\n",
 		"wildcard prob out of range": "seed:\n  wildcard_probabilities:\n    \"document#viewer\": 1.5\n",
@@ -139,6 +139,19 @@ func TestValidateAgainstModel(t *testing.T) {
 		mutate(cfg)
 		if err := cfg.validateAgainstModel(a); err == nil {
 			t.Errorf("bad config %d passed model validation", i)
+		}
+	}
+}
+
+// list-objects and list-users are valid load endpoints.
+func TestListEndpointsValid(t *testing.T) {
+	for _, ep := range []string{"check", "batch-check", "list-objects", "list-users"} {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte("load:\n  endpoint: "+ep+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadConfigFile(path); err != nil {
+			t.Errorf("endpoint %q rejected: %v", ep, err)
 		}
 	}
 }

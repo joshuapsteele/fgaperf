@@ -23,6 +23,55 @@ func TestTimelineWidth(t *testing.T) {
 	}
 }
 
+func TestEndpointNoun(t *testing.T) {
+	cases := map[string]string{
+		"check":        "checks",
+		"batch-check":  "checks",
+		"list-objects": "list-objects calls",
+		"list-users":   "list-users calls",
+	}
+	for endpoint, want := range cases {
+		if got := endpointNoun(endpoint); got != want {
+			t.Errorf("endpointNoun(%q) = %q, want %q", endpoint, got, want)
+		}
+	}
+}
+
+// summarizeCounts must summarize list-endpoint result sizes and skip
+// check-style samples (ResultCount < 0) and errored samples.
+func TestSummarizeCounts(t *testing.T) {
+	if summarizeCounts([]Sample{{ResultCount: -1}, {ResultCount: -1}}) != nil {
+		t.Fatal("check-only samples should produce a nil distribution")
+	}
+	samples := []Sample{
+		{ResultCount: 0},
+		{ResultCount: 2},
+		{ResultCount: 4},
+		{ResultCount: 10},
+		{ResultCount: 99, Err: true}, // errored: excluded
+		{ResultCount: -1},            // not a list sample: excluded
+	}
+	cs := summarizeCounts(samples)
+	if cs == nil {
+		t.Fatal("expected a distribution")
+	}
+	if cs.Responses != 4 {
+		t.Errorf("responses = %d, want 4", cs.Responses)
+	}
+	if cs.Empty != 1 {
+		t.Errorf("empty = %d, want 1", cs.Empty)
+	}
+	if cs.Min != 0 || cs.Max != 10 {
+		t.Errorf("min/max = %d/%d, want 0/10", cs.Min, cs.Max)
+	}
+	if cs.Total != 16 {
+		t.Errorf("total = %d, want 16", cs.Total)
+	}
+	if cs.Mean != 4.0 {
+		t.Errorf("mean = %v, want 4.0", cs.Mean)
+	}
+}
+
 // buildTimeline must bucket samples by completion time anchored at the first
 // measured sample, with throughput counting items (not just samples).
 func TestBuildTimeline(t *testing.T) {

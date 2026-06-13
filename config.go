@@ -105,7 +105,7 @@ type LoadConfig struct {
 	Warmup        time.Duration `yaml:"warmup"`
 	Duration      time.Duration `yaml:"duration"`
 	Consistency   string        `yaml:"consistency"`    // MINIMIZE_LATENCY | HIGHER_CONSISTENCY
-	Endpoint      string        `yaml:"endpoint"`       // check | batch-check
+	Endpoint      string        `yaml:"endpoint"`       // check | batch-check | list-objects | list-users
 	BatchSize     int           `yaml:"batch_size"`     // for batch-check
 	VerifyResults bool          `yaml:"verify_results"` // compare allowed against probe expectations
 	WriteRate     int           `yaml:"write_rate"`     // background tuple writes/sec during the measured phase; 0 = none
@@ -212,9 +212,9 @@ func (c *Config) validate() error {
 		return fmt.Errorf("load.consistency must be MINIMIZE_LATENCY or HIGHER_CONSISTENCY, got %q", c.Load.Consistency)
 	}
 	switch c.Load.Endpoint {
-	case "check", "batch-check":
+	case "check", "batch-check", "list-objects", "list-users":
 	default:
-		return fmt.Errorf("load.endpoint must be check or batch-check, got %q", c.Load.Endpoint)
+		return fmt.Errorf("load.endpoint must be check, batch-check, list-objects, or list-users, got %q", c.Load.Endpoint)
 	}
 	prob := func(name string, v float64) error {
 		if v < 0 || v > 1 {

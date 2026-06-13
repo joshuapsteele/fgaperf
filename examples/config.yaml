@@ -202,9 +202,15 @@ probe:
 # load: how the corpus is replayed
 # ---------------------------------------------------------------------------
 load:
-  # check     = one (user, relation, object) per HTTP request.
+  # check       = one (user, relation, object) per HTTP request.
   # batch-check = many tuples per request; trades per-request HTTP overhead
-  # for higher per-tuple throughput when your callers naturally batch.
+  #               for higher per-tuple throughput when your callers batch.
+  # list-objects = "which objects of a type can this user access?" — OpenFGA's
+  #               expensive enumeration query; the findings add a result-set-
+  #               size distribution.
+  # list-users  = "which users can access this object?" — the inverse.
+  # The list endpoints reuse the corpus triples; their verify_results is a
+  # best-effort spot-check (can false-positive under result-cap truncation).
   endpoint: check
 
   # Items per batch-check request. Ignored when endpoint=check.

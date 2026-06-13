@@ -45,7 +45,8 @@ type Report struct {
 	Server          *ServerMetrics   `json:"server,omitempty"` // diffed Prometheus view of the measured phase
 	WriteRate       int              `json:"write_rate,omitempty"` // background churn writes/sec; 0 = none
 	WriteChurn      *Stats           `json:"write_churn,omitempty"`
-	Timeline        []TimelineBucket `json:"timeline,omitempty"` // per-bucket p50/p99/throughput over the measured window
+	ResultCounts    *CountStats      `json:"result_counts,omitempty"` // list-objects/list-users: distribution of returned-set sizes
+	Timeline        []TimelineBucket `json:"timeline,omitempty"`      // per-bucket p50/p99/throughput over the measured window
 	Sweep           []SweepStep      `json:"sweep,omitempty"`
 	SweepKneeRate   int              `json:"sweep_knee_rate,omitempty"` // highest non-saturated, SLO-passing step; 0 = none
 	SLOP99          string           `json:"slo_p99,omitempty"`
@@ -67,6 +68,58 @@ type Environment struct {
 }
 
 const toolVersion = "0.1.0"
+
+// CountStats is the distribution of result-set sizes for list endpoints. The
+// shape of this distribution is the headline finding for ListObjects/ListUsers:
+// a relation that returns thousands of objects per call costs far more than one
+// that returns a handful, and that cost is invisible in a Check-only view.
+type CountStats struct {
+	Responses int     `json:"responses"`
+	Empty     int     `json:"empty"` // responses that returned zero results
+	Min       int     `json:"min"`
+	Mean      float64 `json:"mean"`
+	P50       int     `json:"p50"`
+	P90       int     `json:"p90"`
+	P99       int     `json:"p99"`
+	Max       int     `json:"max"`
+	Total     int64   `json:"total"` // sum of all returned-set sizes
+}
+
+// summarizeCounts builds the result-size distribution from list-endpoint
+// samples (ResultCount >= 0). Returns nil when no sample carried a count, so
+// Check/BatchCheck runs omit the section.
+func summarizeCounts(samples []Sample) *CountStats {
+	counts := make([]int, 0, len(samples))
+	for _, s := range samples {
+		if s.Err || s.ResultCount < 0 {
+			continue
+		}
+		counts = append(counts, s.ResultCount)
+	}
+	if len(counts) == 0 {
+		return nil
+	}
+	sort.Ints(counts)
+	cs := &CountStats{Responses: len(counts), Min: counts[0], Max: counts[len(counts)-1]}
+	var sum int64
+	for _, c := range counts {
+		sum += int64(c)
+		if c == 0 {
+			cs.Empty++
+		}
+	}
+	cs.Total = sum
+	cs.Mean = float64(sum) / float64(len(counts))
+	pct := func(p float64) int {
+		idx := int(p*float64(len(counts))) - 1
+		if idx < 0 {
+			idx = 0
+		}
+		return counts[idx]
+	}
+	cs.P50, cs.P90, cs.P99 = pct(0.50), pct(0.90), pct(0.99)
+	return cs
+}
 
 // TimelineBucket aggregates the measured samples that completed within one
 // time slice of the measured window. The series exposes cache fill-in, GC
@@ -294,6 +347,7 @@ func BuildReport(res *LoadResult, corpus *Corpus, cfg *Config, tupleCount int, s
 		ws := res.WriteStats
 		r.WriteChurn = &ws
 	}
+	r.ResultCounts = summarizeCounts(res.Samples)
 	r.Timeline = buildTimeline(res.Samples)
 	return r
 }
@@ -383,8 +437,8 @@ func (r *Report) Markdown() string {
 	if r.MismatchFile != "" {
 		mismatchNote += fmt.Sprintf(" The mismatched checks (deduplicated, capped at %d) are listed in `%s`.", maxMismatchRecords, filepath.Base(r.MismatchFile))
 	}
-	w("Sustained throughput was %.0f checks/sec over the %s measured window, with %d errors out of %d measured requests. %s",
-		r.Throughput, r.MeasuredWindow, r.Overall.Errors, r.Overall.Count+r.Overall.Errors, mismatchNote)
+	w("Sustained throughput was %.0f %s/sec over the %s measured window, with %d errors out of %d measured requests. %s",
+		r.Throughput, endpointNoun(r.Endpoint), r.MeasuredWindow, r.Overall.Errors, r.Overall.Count+r.Overall.Errors, mismatchNote)
 	w("")
 	if r.OfferedRate > 0 {
 		w("Achieved request rate was %.0f req/s against an offered %d req/s, with %d rate slots dropped because all workers were busy.",
@@ -467,6 +521,24 @@ func (r *Report) Markdown() string {
 			w("**No step kept up with its offered rate%s.** Re-run with lower rates to find the knee.", sloClause(r.SLOP99))
 		}
 		w("")
+	}
+	if r.ResultCounts != nil {
+		c := r.ResultCounts
+		w("## Result-set sizes")
+		w("")
+		w("*For `%s`, the size of the returned set is the headline cost driver — a relation that returns thousands of items per call is far more expensive than one returning a handful, and that cost is invisible in a Check-only view. Pair these with the latency table above: high latency on a relation with large result sets is expected; high latency with small sets points at a deep resolution path.*", r.Endpoint)
+		w("")
+		w("| Metric | Value |")
+		w("|---|---|")
+		w("| Responses measured | %d |", c.Responses)
+		w("| Results per response | mean %.1f, p50 %d, p90 %d, p99 %d, max %d |", c.Mean, c.P50, c.P90, c.P99, c.Max)
+		w("| Empty responses | %d (%.1f%%) |", c.Empty, 100*float64(c.Empty)/float64(c.Responses))
+		w("| Total results returned | %d |", c.Total)
+		w("")
+		if cfg := r.Consistency; cfg != "" && r.Mismatches > 0 {
+			w("Note: result-set verification is a spot-check (each entry's own object/user should appear in its own listing) and can flag false mismatches when a listing is truncated by OpenFGA's result cap. Treat the mismatch count for list endpoints as advisory.")
+			w("")
+		}
 	}
 	if len(r.Timeline) >= 2 {
 		w("## Latency over time")
@@ -609,6 +681,19 @@ func (r *Report) Markdown() string {
 	w("")
 	w("For the measurement pitfalls behind these caveats — closed-loop vs fixed-rate, coordinated omission, warmup and cache fill-in, corpus uniqueness, and why probing and load can legitimately disagree — see the [benchmarking methodology](https://github.com/joshuapsteele/fgaperf/blob/main/docs/methodology.md) page.")
 	return b.String()
+}
+
+// endpointNoun names the unit of work for a given endpoint, so headline
+// throughput reads correctly for list endpoints (not "checks/sec").
+func endpointNoun(endpoint string) string {
+	switch endpoint {
+	case "list-objects":
+		return "list-objects calls"
+	case "list-users":
+		return "list-users calls"
+	default:
+		return "checks"
+	}
 }
 
 func sloClause(slo string) string {

@@ -230,3 +230,69 @@ func (c *FGAClient) BatchCheck(storeID string, req BatchCheckRequest) (*BatchChe
 	err := c.do("POST", "/stores/"+storeID+"/batch-check", req, &resp)
 	return &resp, err
 }
+
+// ListObjectsRequest asks "which objects of Type does User have Relation to?".
+// Contextual tuples use the same {tuple_keys:[...]} envelope as Check.
+type ListObjectsRequest struct {
+	Type                 string               `json:"type"`
+	Relation             string               `json:"relation"`
+	User                 string               `json:"user"`
+	ContextualTuples     *ContextualTupleKeys `json:"contextual_tuples,omitempty"`
+	Context              map[string]any       `json:"context,omitempty"`
+	AuthorizationModelID string               `json:"authorization_model_id,omitempty"`
+	Consistency          string               `json:"consistency,omitempty"`
+}
+
+type ListObjectsResponse struct {
+	Objects []string `json:"objects"`
+}
+
+func (c *FGAClient) ListObjects(storeID string, req ListObjectsRequest) (*ListObjectsResponse, error) {
+	var resp ListObjectsResponse
+	err := c.do("POST", "/stores/"+storeID+"/list-objects", req, &resp)
+	return &resp, err
+}
+
+// ListUsersRequest asks "which users matching UserFilters have Relation to
+// Object?". Note the OpenFGA API quirk: ListUsers takes contextual_tuples as a
+// bare array, unlike Check/ListObjects which wrap them in a tuple_keys object.
+type ListUsersRequest struct {
+	Object               ListUsersObject  `json:"object"`
+	Relation             string           `json:"relation"`
+	UserFilters          []UserTypeFilter `json:"user_filters"`
+	ContextualTuples     []TupleKey       `json:"contextual_tuples,omitempty"`
+	Context              map[string]any   `json:"context,omitempty"`
+	AuthorizationModelID string           `json:"authorization_model_id,omitempty"`
+	Consistency          string           `json:"consistency,omitempty"`
+}
+
+type ListUsersObject struct {
+	Type string `json:"type"`
+	ID   string `json:"id"`
+}
+
+type UserTypeFilter struct {
+	Type     string `json:"type"`
+	Relation string `json:"relation,omitempty"`
+}
+
+type ListUsersResponse struct {
+	Users []ListUsersUser `json:"users"`
+}
+
+// ListUsersUser is one entry of a ListUsers result. Exactly one of the three
+// shapes is set: a concrete user object, a userset, or a typed wildcard
+// (user:*). We only need Object and Wildcard for verification.
+type ListUsersUser struct {
+	Object   *ListUsersObject `json:"object,omitempty"`
+	Userset  json.RawMessage  `json:"userset,omitempty"`
+	Wildcard *struct {
+		Type string `json:"type"`
+	} `json:"wildcard,omitempty"`
+}
+
+func (c *FGAClient) ListUsers(storeID string, req ListUsersRequest) (*ListUsersResponse, error) {
+	var resp ListUsersResponse
+	err := c.do("POST", "/stores/"+storeID+"/list-users", req, &resp)
+	return &resp, err
+}

@@ -351,9 +351,13 @@ func run(client *FGAClient, cfg *Config, st *State) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("throughput: %.0f checks/sec | p50 %sms p95 %sms p99 %sms | errors %d | mismatches %d\n",
-		report.Throughput, ms(report.Overall.P50), ms(report.Overall.P95), ms(report.Overall.P99),
+	fmt.Printf("throughput: %.0f %s/sec | p50 %sms p95 %sms p99 %sms | errors %d | mismatches %d\n",
+		report.Throughput, endpointNoun(cfg.Load.Endpoint), ms(report.Overall.P50), ms(report.Overall.P95), ms(report.Overall.P99),
 		report.Overall.Errors, report.Mismatches)
+	if report.ResultCounts != nil {
+		fmt.Printf("result-set size: mean %.1f | p50 %d | p99 %d | max %d\n",
+			report.ResultCounts.Mean, report.ResultCounts.P50, report.ResultCounts.P99, report.ResultCounts.Max)
+	}
 	if report.OfferedRate > 0 {
 		fmt.Printf("achieved rate: %.0f req/s of %d offered (%d slots dropped) | response-latency p99 %sms\n",
 			report.AchievedRate, report.OfferedRate, report.DroppedSlots, ms(report.ResponseLatency.P99))

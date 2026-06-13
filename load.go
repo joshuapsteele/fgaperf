@@ -34,6 +34,7 @@ type Sample struct {
 	ErrMsg      string
 	Mismatch    bool
 	Items       int // 1 for check; batch size for batch-check
+	ResultCount int // list-objects/list-users: size of the returned set (-1 = N/A)
 }
 
 type LoadResult struct {
@@ -423,9 +424,14 @@ func RunLoad(client *FGAClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 				}
 			}
 			var s Sample
-			if lc.Endpoint == "batch-check" {
+			switch lc.Endpoint {
+			case "batch-check":
 				s = doBatch(client, picker, mism, corpus, cfg, rng)
-			} else {
+			case "list-objects":
+				s = doListObjects(client, picker, mism, corpus, cfg, rng)
+			case "list-users":
+				s = doListUsers(client, picker, mism, corpus, cfg, rng)
+			default:
 				s = doCheck(client, picker, mism, corpus, cfg, rng)
 			}
 			if !intended.IsZero() {
@@ -608,6 +614,95 @@ func doBatch(client *FGAClient, picker *corpusPicker, mism *mismatchRecorder, co
 				s.Mismatch = true
 				mism.record(e, r.Allowed)
 			}
+		}
+	}
+	return s
+}
+
+// doListObjects replays a corpus entry as "which <type> can <user> <relation>?".
+// Verification is a spot-check: the entry's own object should appear in the
+// listing iff the probe found the pair allowed. It can false-positive if the
+// listing is truncated (OpenFGA caps list-objects results), so it is best-effort
+// — latency and result-set size are the primary signals.
+func doListObjects(client *FGAClient, picker *corpusPicker, mism *mismatchRecorder, corpus *Corpus, cfg *Config, rng *rand.Rand) Sample {
+	e := picker.pick(rng)
+	t0 := time.Now()
+	resp, err := client.ListObjects(corpus.StoreID, ListObjectsRequest{
+		Type:                 typeOfObject(e.Object),
+		Relation:             e.Relation,
+		User:                 e.User,
+		ContextualTuples:     contextualTupleKeys(e.ContextualTuples),
+		Context:              e.Context,
+		AuthorizationModelID: corpus.ModelID,
+		Consistency:          cfg.Load.Consistency,
+	})
+	completed := time.Now()
+	s := Sample{Target: e.Target, Conditioned: e.Conditioned, Contextual: e.Contextual, Latency: completed.Sub(t0), Completed: completed, Items: 1, ResultCount: -1}
+	if err != nil {
+		s.Err = true
+		s.ErrClass = classifyErr(err)
+		s.ErrMsg = err.Error()
+		return s
+	}
+	s.ResultCount = len(resp.Objects)
+	if cfg.Load.VerifyResults {
+		present := false
+		for _, o := range resp.Objects {
+			if o == e.Object {
+				present = true
+				break
+			}
+		}
+		if present != e.Expected {
+			s.Mismatch = true
+			mism.record(e, present)
+		}
+	}
+	return s
+}
+
+// doListUsers replays a corpus entry as "which <user type> can <relation>
+// <object>?". The entry's own user should appear in the listing iff the pair
+// was allowed; a typed wildcard (user:*) also counts as present. Best-effort,
+// same truncation caveat as doListObjects.
+func doListUsers(client *FGAClient, picker *corpusPicker, mism *mismatchRecorder, corpus *Corpus, cfg *Config, rng *rand.Rand) Sample {
+	e := picker.pick(rng)
+	objType, objID, _ := strings.Cut(e.Object, ":")
+	userType := typeOfUser(e.User)
+	t0 := time.Now()
+	resp, err := client.ListUsers(corpus.StoreID, ListUsersRequest{
+		Object:               ListUsersObject{Type: objType, ID: objID},
+		Relation:             e.Relation,
+		UserFilters:          []UserTypeFilter{{Type: userType}},
+		ContextualTuples:     e.ContextualTuples,
+		Context:              e.Context,
+		AuthorizationModelID: corpus.ModelID,
+		Consistency:          cfg.Load.Consistency,
+	})
+	completed := time.Now()
+	s := Sample{Target: e.Target, Conditioned: e.Conditioned, Contextual: e.Contextual, Latency: completed.Sub(t0), Completed: completed, Items: 1, ResultCount: -1}
+	if err != nil {
+		s.Err = true
+		s.ErrClass = classifyErr(err)
+		s.ErrMsg = err.Error()
+		return s
+	}
+	s.ResultCount = len(resp.Users)
+	if cfg.Load.VerifyResults {
+		present := false
+		for _, u := range resp.Users {
+			if u.Object != nil && u.Object.Type+":"+u.Object.ID == e.User {
+				present = true
+				break
+			}
+			if u.Wildcard != nil && u.Wildcard.Type == userType {
+				present = true // user:* grants the relation to every user of this type
+				break
+			}
+		}
+		if present != e.Expected {
+			s.Mismatch = true
+			mism.record(e, present)
 		}
 	}
 	return s
