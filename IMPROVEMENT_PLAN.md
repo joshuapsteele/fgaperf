@@ -1,9 +1,17 @@
-# fgaperf Improvement Plan
+# fgaperf Improvement Plan (v2)
 
-A prioritized roadmap for making fgaperf more valuable and robust as an OpenFGA
-performance-testing tool. Written to be picked up incrementally by future
-working sessions: each item states the motivation, a design sketch, the files
-involved, and acceptance criteria. Items are independent unless noted.
+A prioritized roadmap for the next phase of fgaperf. Written, like its
+predecessor, to be picked up incrementally by future working sessions: each item
+states the motivation, a design sketch, the files involved, and acceptance
+criteria. Items are independent unless noted.
+
+_Drafted 2026-06-13, superseding the v1 plan. **The v1 plan is complete** — all
+35 items shipped (one, gRPC, was deferred and is revived here as item 7). The v1
+plan's full per-item completion notes live in git history (this file before
+2026-06-13); a compact index of what shipped is in [Completed in v1](#completed-in-v1)
+at the end. Two prior bug-audit passes (commits `d498d81` and `1102d71`) closed
+ten findings; a follow-up review found no further correctness bugs, only the four
+small cleanups folded into item 13._
 
 ## Orientation for a new session
 
@@ -11,1125 +19,370 @@ Architecture (one file per concern, all `package main`):
 
 | File | Role |
 |---|---|
-| `main.go` | CLI: `inspect`, `setup`, `probe`, `run`, `all`, `cleanup`; state file lifecycle |
-| `config.go` | YAML config schema and defaults |
-| `model.go` | Parses compiled model JSON; derives assignable relations, CEL-reachable relations, condition param split |
-| `seed.go` | Generates the cohort-partitioned tuple graph and condition context values; parallel seeding |
+| `main.go` | CLI: `inspect`, `setup`, `probe`, `run`, `all`, `cleanup`, `compare`, `plan`, `validate`, `doctor`, `gen-config`; state file lifecycle |
+| `config.go` | YAML config schema, defaults (`applyDefaults`), strict validation, flag overrides |
+| `model.go` | Parses compiled model JSON; derives assignable relations, CEL-reachable relations (fixpoint), condition param tuple/request split |
+| `seed.go` | Generates the cohort-partitioned tuple graph and condition context values; parallel, resumable seeding |
 | `probe.go` | Samples candidate checks, executes each once to learn ground truth, resamples to the target allowed/denied mix, writes `corpus.json` |
-| `load.go` | Replays the corpus (closed-loop or fixed-rate), collects samples, computes stats |
-| `client.go` | Thin HTTP client for the OpenFGA REST API (deliberately no SDK/middleware) |
-| `report.go` | JSON results + findings markdown |
+| `load.go` | Replays the corpus (closed-loop or fixed-rate), background churn, collects samples, computes stats |
+| `client.go` | Thin HTTP client for the OpenFGA REST API (deliberately no SDK/middleware); OIDC token source |
+| `metrics.go` | Scrapes + diffs OpenFGA's Prometheus endpoint over the measured phase |
+| `report.go` | JSON results + findings markdown; timeline, result-set sizes, sweep table |
+| `compare.go` | Diffs two results files into a comparison markdown |
+| `progress.go` | Live, throttled progress output (suppressed off-TTY) |
 
-Design principles to preserve when making changes:
+Design principles to preserve when making changes (unchanged from v1 — they are
+the contract):
 
 1. **Model-driven, model-agnostic.** Everything is derived from the compiled
    model JSON plus config. No hardcoded type or relation names anywhere.
 2. **Probe-then-replay.** Expected outcomes are learned empirically (one
    `HIGHER_CONSISTENCY` check per corpus candidate), never predicted
-   statically. Don't add static outcome prediction; intersections, conditions,
-   and contextual tuples make it a tar pit.
+   statically. Intersections, conditions, and contextual tuples make static
+   prediction a tar pit.
 3. **Thin hot path.** The load loop must stay free of allocation-heavy
    abstractions, SDK middleware, and retries. Anything added between the
-   ticker and `http.Client.Do` is something we're measuring by accident.
+   ticker and the request call is something we're measuring by accident.
 4. **Determinism.** A fixed `random_seed` must keep regenerating the same
-   world. `probe` reconstructs the instance space by re-running the generator
-   with the same seed — changes to generation order are breaking changes.
+   world and corpus. `probe` reconstructs the instance space by re-running the
+   generator with the same seed — changes to RNG consumption order in `seed.go`
+   are breaking changes.
 5. **Defaults always work.** An empty config against any compiled model must
    produce a working run (`config.applyDefaults`, CI integration job).
 
-Verification commands: `go vet ./... && go test ./...`, then the CI-style
-end-to-end run (see `.github/workflows/ci.yaml` integration job) against
-`examples/config.yaml` with a local OpenFGA.
+Verification commands: `go vet ./... && go test ./...` (CI also runs `-race`),
+then the end-to-end run against `examples/config.yaml` with a local OpenFGA.
 
 ---
 
-## P0 — Measurement correctness
+## P0 — Foundations that unlock the rest
 
-These affect whether the numbers can be trusted. Do these before adding
-features.
+These are leverage points: later items in every theme build on them. Do them
+first.
 
-**Status: all five P0 items done (2026-06-12).** Verified with `go vet`,
-`go test -race`, and end-to-end runs against the compose stack: a closed-loop
-smoke run, plus an oversubscribed fixed-rate run (6000 req/s offered, 4
-workers) that correctly reported achieved 3768 req/s, 16.9k dropped slots, and
-response-latency p99 of 1622 ms vs service p99 of 2.96 ms. Per-item notes
+### 1. Streaming latency aggregation (bounded-memory percentiles)
+
+Motivation: today every measured `Sample` is retained in a slice and
+percentiles are computed by sorting it (`summarizeBy`). At high throughput a
+short run accumulates millions of samples — hundreds of MB resident — and the
+progress goroutine re-copies and re-sorts the entire slice every 5s under the
+collector's lock (the one scalability cost the recent review flagged). This caps
+both achievable load and run length, and blocks the soak/distributed items
 below.
 
-### 1. Fix coordinated omission in fixed-rate mode ✅
+Design sketch: introduce a merge-able online sketch — an HDR histogram (fixed
+relative error, e.g. 3 significant figures) or a t-digest — in a new `digest.go`.
+Each reported population (overall, by-target, conditioned/unconditioned,
+contextual/without, timeline bucket) holds one digest fed as samples complete.
+`Summarize`/`summarizeBy` gain a digest-backed path that fills the existing
+`Stats` shape; `loadProgress` reads a digest snapshot instead of copying the
+slice. Keep full raw retention only when the operator opts in — the existing
+`load.sample_file` already streams raw samples to disk for anyone who needs them.
+Preserve determinism: digests are order-insensitive, so merge results are stable.
 
-**Problem.** In `load.go`, the rate ticker drops slots when the channel is
-full ("drop the slot rather than build backlog"), and latency is measured from
-the moment a worker *starts* the request, not from when the request *should
-have* started. Under saturation this silently lowers the offered rate and
-hides queueing delay — the classic coordinated-omission trap. The report
-prints the configured rate, not the achieved rate, so the reader can't even
-tell it happened.
+Files: new `digest.go`; `load.go` (Sample collection, `Summarize`/`summarizeBy`,
+the RunLoad collector loop); `progress.go` (`loadProgress.add`/`run`);
+`report.go` (`Stats`, `buildTimeline`, `summarizeCounts` stays as-is for counts).
 
-**Sketch.**
-- Track intended send times: slot N's intended time is `start + N*interval`.
-  Record both service latency (current measurement) and response latency
-  (`completion - intended_send`), reporting both.
-- Count dropped/late slots and report achieved rate vs offered rate in the
-  findings doc, with a loud callout when achieved < ~98% of offered.
-- Keep closed-loop mode as-is (it has no offered rate to fall behind).
+Acceptance: a 60s high-rate closed-loop run keeps resident memory roughly flat
+regardless of sample count; reported p50/p90/p95/p99 fall within the digest's
+stated tolerance of the exact sort-based values on a fixed seed (add a test that
+compares digest vs. exact on a known distribution); progress ticks no longer copy
+the sample slice; `sample_file` export still works. **Folds in review
+observation #1.**
 
-**Files.** `load.go` (worker loop, `Sample`, `LoadResult`), `report.go`.
+### 2. Result baseline + regression substrate
 
-**Accept.** A fixed-rate run against a deliberately undersized server reports
-achieved rate < offered rate and shows response-latency percentiles much worse
-than service-latency percentiles, instead of silently looking healthy.
+Motivation: each run emits a results JSON, but nothing pins a baseline or gates a
+regression. A baseline format plus a comparison-against-baseline command is the
+substrate both the CI gate (item 7) and trend/significance work (item 10) need.
 
-**Done.** The rate dispatcher now sends *intended* times (slot N fires at
-`start + N*interval`) through `rateCh`; workers record
-`RespLatency = completion - intended`. The buffer holds one second of slots and
-drops (counted in `DroppedSlots`) only when workers fall a full second behind.
-Report gains `achieved_rate_per_sec`, `dropped_rate_slots`, a
-`response_latency` stats block, and a loud markdown callout when achieved <
-98% of offered. Closed-loop mode unchanged. Verified per the accept criterion
-(see status note above).
+Design sketch: define a compact baseline JSON — key percentiles per target and
+overall, throughput, DS-queries/request, plus the config fingerprint and
+`random_seed`. Add `fgaperf baseline save <results.json>` and
+`fgaperf compare --against-baseline <baseline.json> [--max-regression p99=10%,throughput=-5%]`,
+reusing the existing `compare` diff machinery and `comparabilityCaveats`. The
+compare command exits non-zero when any tracked metric regresses past its
+threshold.
 
-### 2. Report corpus duplication, and bound it ✅
+Files: `compare.go` (reuse `diffConfigs`/`comparabilityCaveats`); `main.go`
+(subcommand/flags); new `baseline.go`.
 
-**Problem.** `probe.go` `resample`/`sampleN` draw with replacement to hit
-`allowed_ratio`. When natural allowed (or denied) outcomes are scarce, the
-corpus becomes a few distinct entries repeated many times. Replaying
-near-identical checks inflates server cache hit rates and understates latency.
-Nothing in the output reveals this.
-
-**Sketch.**
-- Track distinct-entry counts per target through resampling; print them in
-  `probe` output and persist them in `corpus.json`.
-- Add `probe.max_duplication` (default e.g. 5×): if hitting `allowed_ratio`
-  would need more duplication than that, keep the natural mix for that target
-  and warn — same fallback the code already uses for single-class targets.
-- Surface corpus uniqueness in the report's caveats section (the data is in
-  the corpus; `report.go` already receives it).
-
-**Files.** `probe.go`, `report.go`, `config.go`.
-
-**Accept.** A run with a very low natural allowed rate prints a duplication
-warning, and the findings doc states distinct-vs-total corpus entries.
-
-**Done.** `probe.max_duplication` (default 5, -1 = unbounded) makes `resample`
-keep the natural mix with a warning when hitting `allowed_ratio` would exceed
-the cap (`TestResampleCapsDuplication`). `Corpus` carries per-target
-`target_stats` (total/distinct) in `corpus.json`; probe prints overall distinct
-count and warns per target above 2x duplication; the findings doc states
-distinct-vs-total in the config table and a caveats paragraph. Observed live:
-the example model's `document#can_share` (natural 2 allowed / 198 denied) now
-keeps its natural mix instead of 50 copies of 2 checks.
-
-### 3. Compute throughput over the measured wall-clock window ✅
-
-**Problem.** `report.go` divides items by the *configured* duration. Workers
-checking `time.Now().Before(deadline)` before each request means in-flight
-requests complete after the deadline; slow tails stretch the real window.
-
-**Sketch.** Record first-sample and last-sample completion timestamps in the
-measured phase and divide by that window. Keep configured duration in the
-config table.
-
-**Files.** `load.go`, `report.go`.
-
-**Accept.** Throughput for a run with multi-second p99s no longer exceeds what
-the wall clock supports.
-
-**Done.** Every `Sample` records its completion timestamp; the collector tracks
-first/last measured completion into `LoadResult.MeasuredWindow`, and the report
-divides items by that window (falling back to configured duration only when no
-samples exist). The findings doc shows the actual window next to the configured
-duration; `measured_window` is in the results JSON.
-
-### 4. Error visibility ✅
-
-**Problem.** Errors are a single counter. A run with 5% timeouts and a run
-with 5% HTTP 429s look identical, and the error rate isn't broken down per
-target. `client.go` returns rich error strings but `load.go` flattens them to
-`Err bool`.
-
-**Sketch.** Classify into a small enum (timeout, connection, 4xx, 5xx,
-decode) on the sample; report a per-class count and a per-target error column.
-Keep the first N error strings verbatim for the findings doc, like probe
-already does for its errors.
-
-**Files.** `client.go` (typed error or status code on the error), `load.go`,
-`report.go`.
-
-**Accept.** A run against a server that starts returning 429s mid-run produces
-a findings doc that says so.
-
-**Done.** `client.go` returns a typed `*HTTPError` carrying the status code;
-`classifyErr` in `load.go` buckets errors into timeout / connection / 4xx /
-5xx / decode (unit-tested in `load_test.go`). Samples carry class + verbatim
-message; the report gets `errors_by_class`, the first 5 verbatim
-`error_samples` (so a 429 burst is named explicitly in the findings doc), an
-"Errors" markdown section, and an Errors column in the per-relation table.
-
-### 5. Validate config strictly ✅
-
-**Problem.** `yaml.Unmarshal` ignores unknown keys, so a typo like
-`alowed_ratio:` silently runs with defaults. For a measurement tool,
-misconfiguration that looks like configuration is data corruption.
-
-**Sketch.** Use `yaml.Decoder` with `KnownFields(true)` in
-`LoadConfigFile`. Additionally validate cross-field invariants at load time:
-consistency is one of the two legal values, endpoint is `check|batch-check`,
-probabilities are in [0,1], pools referenced by `conditions` exist, fanout and
-contextual keys parse as `type#relation`. After the model loads, also verify
-fanout/instances/contextual/probe-target keys exist in the model (today a
-misspelled relation in `probe.targets` errors only as an empty corpus, and a
-misspelled fanout key silently uses the default).
-
-**Files.** `config.go`, `main.go` (post-model validation pass), tests in
-`config_test.go`.
-
-**Accept.** A config with an unknown key or a fanout key naming a nonexistent
-relation fails fast with a message naming the bad key.
-
-**Done.** `LoadConfigFile` decodes with `KnownFields(true)` and then runs
-`Config.validate()` (consistency/endpoint enums, probabilities in [0,1],
-`type#relation` key shapes, pools referenced by conditions exist, positive
-counts). `Config.validateAgainstModel()` runs in `main.go` for
-inspect/setup/probe/all and checks that fanout, instances, contextual,
-probe-target, subject-type, and condition keys all exist in the model. Both the
-example and the private config pass; bad configs covered in `config_test.go`.
+Acceptance: a results file that regresses p99 beyond the threshold exits non-zero
+naming the metric and target; an in-tolerance file exits zero; `comparabilityCaveats`
+still fire (and downgrade to a warning) when configs differ.
 
 ---
 
-## P1 — High-value capability gaps
+## P1 — High-value capability
 
-### 6. Capture server-side metrics alongside client-side latency ✅
+### 3. Open-model (Poisson) arrival process for fixed-rate
 
-**Motivation.** This is the single most valuable OpenFGA-specific addition.
-Client-side latency conflates network, JSON, and server work. OpenFGA exposes
-Prometheus metrics (the bundled compose already publishes `:2112` and enables
-datastore metrics) including request duration, **datastore query count per
-request**, and dispatch counts — datastore queries per check is *the* capacity
-currency for OpenFGA sizing, and no client-side number can substitute for it.
+Motivation: fixed-rate mode fires slots on a uniform ticker (slot N at
+`start + N*interval`). Real traffic is bursty; a perfectly even arrival rate
+understates queueing and tail latency. An open-model Poisson process
+(exponential inter-arrivals) is the standard production-load model, and the
+coordinated-omission groundwork already in place (intended-time accounting, now
+warmup-gated) supports it directly.
 
-**Sketch.**
-- New optional config: `metrics.prometheus_url`. When set, scrape `/metrics`
-  at measured-phase start and end; diff counters/histograms.
-- Report per-run: server-side request duration percentiles (from histogram
-  buckets), total datastore queries, datastore queries per check, cache
-  hit/miss counters when the query cache is enabled.
-- Plain HTTP GET + text-format parsing of the handful of metric families
-  needed; no Prometheus client dependency on the hot path (scrapes happen
-  outside the measurement window).
+Design sketch: add `load.arrival: uniform|poisson` (default `uniform` =
+today's behavior, byte-for-byte). For `poisson`, the rate generator draws
+inter-arrival `= -ln(1-U)/rate` from a dedicated seeded RNG and accumulates
+`intended` times from those draws. `DroppedSlots` and `RespLatency` accounting
+are unchanged — both already key off `intended`. Determinism holds via the
+seeded RNG.
 
-**Files.** New `metrics.go`, `config.go`, `main.go` (`run`), `report.go`.
+Files: `load.go` (rate-generator goroutine); `config.go` (default + validation);
+`report.go` (record the arrival model in the config snapshot it already embeds).
 
-**Accept.** Against the bundled compose stack, the findings doc includes a
-"Server-side view" section with datastore queries per check; the tool still
-works (section omitted) when the URL is unset or unreachable.
+Acceptance: with `arrival: poisson` and a fixed seed, the `intended` series is
+deterministic; mean achieved rate ≈ offered; the response-latency tail is
+visibly heavier than `uniform` at the same offered rate against the same server;
+`uniform` output is unchanged.
 
-**Done (2026-06-12).** New `metrics.go` with a minimal Prometheus text parser
-(no client dependency): snapshots at the warmup/measured boundary (background
-goroutine in `RunLoad`) and after the last worker, diffed with counter-reset
-clamping. Families: `openfga_request_duration_ms`,
-`openfga_datastore_query_count`, `openfga_dispatch_count` (histograms,
-aggregated across label sets — the diff window isolates load traffic) and the
-check-cache counters. Percentiles are bucket-interpolated à la
-`histogram_quantile`. `metrics.prometheus_url` is set in
-`examples/config.yaml`; scrape failures warn and skip the section. Verified
-against the compose stack: findings doc reported 9.74 datastore queries per
-request, server-side p99 7.57 ms. Parser/diff/quantile unit tests in
-`metrics_test.go`.
+### 4. gRPC client option (revives deferred v1 item 18)
 
-### 7. Rate sweep: find the saturation knee automatically ✅
+Motivation: OpenFGA's gRPC API is the lower-overhead production path; the HTTP +
+JSON overhead is baked into today's client-side numbers. High-throughput callers
+use gRPC, and "what does the server actually cost over gRPC" is unanswerable
+today. Deferred in v1 to avoid an SDK dependency on the hot path; worth doing now
+that the client seam is stable.
 
-**Motivation.** One closed-loop point and one fixed-rate point don't answer
-the question users actually have: "what throughput can this deployment sustain
-within an SLO?" Today that means many manual runs and hand-built curves.
+Design sketch: extract the small interface the load loop needs from `FGAClient`
+(`Check`, `BatchCheck`, `ListObjects`, `ListUsers`) and add a `transport:
+http|grpc` knob selecting an alternate implementation. Keep principle #3: a
+single tuned `grpc.ClientConn`, no interceptors, pinned/vendored stubs. Seeding
+and probe can stay on HTTP; only the load loop needs the gRPC path.
 
-**Sketch.**
-- `load.sweep: { rates: [100, 200, 400, ...], step_duration: 60s }` (explicit
-  list first; auto-stepping can come later). Each step reuses the same corpus
-  and store; warmup once.
-- Emit one stats block per step plus a throughput-vs-p99 table in the findings
-  doc; mark the highest step where achieved rate ≈ offered rate and p99 is
-  under an optional `load.slo_p99`.
-- Depends on item 1 (achieved-rate reporting) to know when a step saturated.
+Files: `client.go` (extract the load-loop interface); new `client_grpc.go`;
+`config.go` (`transport`); `load.go` (transport selection); CI workflow (gRPC
+smoke).
 
-**Files.** `load.go`, `config.go`, `report.go`, `main.go`.
+Acceptance: `transport: grpc` runs all four endpoints against a gRPC OpenFGA and
+reports lower per-request overhead than HTTP for the same workload; HTTP stays
+the default and unchanged; CI exercises a gRPC smoke run.
 
-**Accept.** A single `fgaperf run` with a sweep config produces a findings doc
-with a rate/latency table from which the knee is readable, and names the last
-non-saturated step.
+### 5. Traffic replay: build the corpus from a real check log
 
-**Done (2026-06-12).** `load.sweep: {rates: [...], step_duration: 60s}` plus
-optional `load.slo_p99` (checked against response-latency p99 — the
-caller-experienced number). `RunSweep` reuses corpus and store; warmup runs
-only before the first step. The findings doc gains a "Rate sweep" table
-(offered/achieved/dropped/p50/p95/p99/response-p99/errors/datastore-queries)
-with the knee marked; the headline sections reflect the knee step (explicitly
-labeled), or the final step when everything saturated. Knee = highest step
-with achieved ≥ 98% of offered and SLO passing. Verified live: rates
-[1000, 3000, 8000] against the compose stack found the knee at 3000 (8000
-achieved only ~4900). Unit tests cover knee selection and the all-saturated
-case.
+Motivation: the probe synthesizes a check distribution from the model. Teams that
+have a real check log (OpenFGA request logs, app audit trails) want to replay
+*that* exact distribution so the load mix matches production and probe synthesis
+is bypassed.
 
-### 8. `fgaperf compare`: first-class A/B reporting ✅
+Design sketch: add `corpus_source: probe|replay` with `replay.file` pointing at a
+JSONL of `{user, relation, object[, contextual_tuples, context]}`. fgaperf still
+executes each distinct entry once at `HIGHER_CONSISTENCY` to learn ground truth
+(principle #2 preserved), then replays under load with frequency weighting drawn
+from the log's natural counts. Reuse `corpusPicker` weighting.
 
-**Motivation.** The tool's natural use is comparative: consistency modes,
-cache on/off, model variants, OpenFGA versions, instance counts. The JSON
-results exist, but comparison is currently manual.
+Files: `probe.go` (alternate corpus builder); `config.go`; new `replay.go`.
 
-**Sketch.** `fgaperf compare results-a.json results-b.json [-o dir]` →
-markdown with side-by-side overall and per-target percentiles, deltas (ms and
-%), and config differences pulled from the embedded config snapshots (item 9).
-Refuse (or loudly caveat) comparisons where corpus size, endpoint, or
-duration differ.
+Acceptance: given a JSONL log against a seeded store, fgaperf builds a corpus
+whose target mix matches the log, verifies ground truth, and runs load;
+malformed lines are reported and skipped, not fatal.
 
-**Files.** New `compare.go`, `main.go`.
+### 6. Per-relation datastore-query attribution
 
-**Accept.** Two runs differing only in `load.consistency` produce a compare
-doc showing per-relation deltas and naming the one config difference.
+Motivation: the server-side view is aggregate over the whole measured phase —
+mean DS-queries/request for the run, not per relation. The per-relation cost
+("this relation costs ~12 datastore reads, that one costs 2") is the sharpest
+capacity signal for spotting an expensive rewrite, and it's invisible today.
 
-**Done (2026-06-12).** New `compare.go`: `fgaperf compare a.json b.json`
-writes `results/compare-<stamp>.md` with side-by-side overall stats (Δ ms and
-%), a server-side delta table (datastore queries per request) when both runs
-have one, per-relation p50/p99 deltas, and a recursive diff of the embedded
-resolved configs. Loud "not directly comparable" caveats when endpoint, corpus
-size, duration, concurrency, or tool version differ. Verified live per the
-accept criterion. Along the way fixed a reproducibility bug this exposed:
-`resample` iterated targets in map order, consuming the RNG differently per
-run; it now iterates sorted (regression test `TestResampleDeterministic`).
+Design sketch: at probe time, at low concurrency and one relation at a time, diff
+the Prometheus `openfga_datastore_query_count` histogram around a small batch of
+checks per target to attribute approximate DS-queries/check per relation. Record
+it on the corpus and surface a per-relation column in the report. Best-effort and
+gated on a metrics endpoint; off by default so the normal probe path is
+unchanged.
 
-### 9. Embed the resolved config and environment in results JSON ✅
+Files: `metrics.go` (a targeted around-a-batch diff helper); `probe.go`
+(attribution pass behind a flag); `report.go` (per-relation DS column).
 
-**Motivation.** Reproducibility. The current `Report` records a handful of
-load parameters but not the seed graph shape, fanout, pools, condition
-settings, or `random_seed` — the things that determine what was measured.
-Results files outlive memory of how they were produced. Prerequisite for a
-useful `compare`.
+Acceptance: with metrics configured and the flag on, the per-relation table gains
+a "DS queries/check (probe)" column whose values are sane (a deep tuple-to-userset
+relation > a direct relation); without metrics the column is omitted; the default
+probe path is byte-identical when the flag is off.
 
-**Sketch.** Add `resolved_config` (the post-defaults `Config`, marshaled) and
-an `environment` block (tool version, OpenFGA server version from `GET
-/healthz`/build info if available, client GOOS/GOARCH/CPU count — the
-markdown already prints some of this) to the results JSON. Consider a
-warning note when the working tree is dirty versus the recorded tool version.
+### 7. CI perf-regression gate (built on item 2)
 
-**Files.** `report.go`, `main.go`.
+Motivation: catch performance regressions from OpenFGA upgrades, datastore tuning,
+or model changes automatically, the same way the unit tests catch correctness
+regressions.
 
-**Accept.** A results JSON alone is sufficient to recreate the run: it
-contains every knob that affects generation and load.
+Design sketch: a documented CI recipe plus `compare --against-baseline` from item
+2 — store a baseline artifact, run `fgaperf all`, compare, fail the job on
+regression. Provide a copy-paste GitHub Actions snippet in `docs/`. A small
+`--exit-on-regression` convenience can wrap the threshold check.
 
-**Done (2026-06-12).** `Config.Resolved()` round-trips the post-defaults
-config through YAML into a generic map (yaml key names and human-readable
-durations preserved; `openfga.api_token` redacted when set) and embeds it as
-`resolved_config` in the results JSON, alongside an `environment` block
-(os/arch/cpus/go version). OpenFGA exposes no version endpoint over HTTP, so
-server version is not recorded. Verified in a live run: `random_seed`, seed
-shape, pools, and load knobs all present in the output JSON.
+Files: `docs/` (CI recipe); reuse item 2; minor `main.go`.
 
-### 10. Mixed read/write workloads ✅
-
-**Motivation.** Production OpenFGA serves checks *while* tuples churn, and
-writes invalidate caches; a read-only steady state is the server's best case.
-Currently writes only happen at seed time.
-
-**Sketch.**
-- `load.write_rate: <tuples/sec>` (default 0): a dedicated writer goroutine
-  (not the check workers) writes/deletes generated tuples during the measured
-  phase — e.g. delete-then-rewrite of randomly chosen seeded tuples so the
-  corpus ground truth stays valid, or writes of fresh tuples in instance
-  cohorts the corpus never samples (safer; keeps `verify_results` meaningful).
-- Report write latency separately and annotate the check stats as
-  "with N writes/sec background churn".
-- Keep `verify_results` correctness as the constraint that picks the design:
-  background churn must not change any corpus entry's expected outcome.
-
-**Files.** `load.go`, `seed.go` (tuple selection for churn), `config.go`,
-`report.go`.
-
-**Accept.** A run with churn enabled shows zero verification mismatches and
-visibly different check latency vs a churn-free run with caching enabled.
-
-**Done (2026-06-12).** `load.write_rate: <tuples/sec>` (default 0) runs a
-dedicated churn goroutine alongside the check workers. The fresh-instances
-design won over delete-then-rewrite: `probe.go` collects `ChurnTemplates`
-from the model — (object type, relation, user type) shapes whose direct ref
-is plain (no userset, no wildcard, no condition) and whose user type is
-terminal when any terminal templates exist — and the churn loop instantiates
-them with nonce-scoped IDs (`type:churn-<nonce>-<seq>`) that no seeded tuple
-or corpus check ever references, so corpus ground truth cannot shift. The
-loop keeps a bounded window of 64 live tuples, deleting the oldest once full
-so both write and delete invalidation paths churn; `DeleteTuples` strips
-conditions (the write endpoint rejects them on deletes). Measured-phase
-write/delete latencies are reported as a "Background tuple writes" row in
-the findings table, a "Background churn" config row, and an annotation that
-check stats include the write traffic; if the model has no safe template the
-run warns and disables churn rather than failing. Verified end-to-end:
-`write_rate: 50` over an 8s measured window produced 400 write/delete calls,
-zero verification mismatches, and write p99 reported alongside check stats;
-`go test -race ./...` passes with a unit test asserting templates are plain
-and terminal-preferred against the example model.
-
-### 11. Per-target workload weights ✅
-
-**Motivation.** Probe samples every target equally and load replays the
-corpus uniformly, so every relation gets the same traffic share. Real traffic
-is skewed toward a few entry-point relations. Headline numbers should be
-reweightable to a production-like mix.
-
-**Sketch.** `probe.targets` accepts optional weights
-(`- relation: type#rel`, `weight: 8`); load picks corpus entries by target
-weight instead of uniformly. Per-target stats are unaffected; the *overall*
-row becomes mix-weighted. Default weight 1 preserves current behavior.
-
-**Files.** `config.go`, `probe.go` (corpus carries weights), `load.go`.
-
-**Accept.** Doubling one target's weight roughly doubles its request share in
-the per-relation table without changing other targets' latency stats.
-
-**Done (2026-06-12).** `probe.targets` entries are now either bare strings
-(weight 1) or `{relation: type#rel, weight: N}` maps (`TargetSpec` with custom
-YAML unmarshal). Probe still samples every target equally; weights are
-persisted in `corpus.json` (only when any differ from 1) and the load phase's
-`corpusPicker` selects a target proportionally to weight, then an entry
-uniformly within it. Without weights the picker is uniform over entries —
-bit-for-bit the original behavior. Verified live: weight 8 on
-`document#editor` among five targets produced a 66.3% request share
-(expected 8/12 ≈ 66.7%).
-
-### 12. Richer generation shapes: per-user-type fanout and value distributions ✅
-
-**Motivation.** Two real frictions encountered while tuning for an actual
-production model:
-- Fanout applies per (object, relation, *each accepted user type*), so a
-  relation accepting `[user, service, group#member]` with fanout 6 gets 18
-  subjects. There's no way to say "6 group members, 0 direct services".
-- Map/list condition parameters get a single fixed `keys:` count, but real
-  datasets are skewed or bimodal (most role-style objects carry small maps, a
-  few carry very large ones). Today that takes two bracketing runs.
-
-**Sketch.**
-- Extend fanout keys with an optional user-type suffix:
-  `group#member@user: 8`, `group#member@service: 0`; the bare key remains the
-  per-type default. Same for `wildcard_probability` as an optional per-relation
-  map, keeping the global scalar as default.
-- Extend `ParamGenConfig` with `keys_distribution: {values: [...], weights:
-  [...]}` (or `min/max` + `skew`) so map sizes vary per tuple, drawn from the
-  world's deterministic RNG.
-
-**Files.** `config.go`, `seed.go`. Watch determinism: new draws must not
-reorder existing RNG consumption for configs that don't use the new knobs
-(gate the new code paths on the new keys being present).
-
-**Accept.** A config can produce groups with user members but no service
-members, and a tuple set whose condition map sizes follow a configured
-bimodal distribution — verified by a unit test over generated tuples.
-
-**Done (2026-06-12).** `seed.fanout` keys accept an optional `@usertype`
-suffix (`document#editor@user: 0`, usersets as
-`document#editor@group#member: 4`); the bare `type#relation` key stays the
-default for unsuffixed user types. `seed.wildcard_probabilities` is a
-per-relation map overriding the global `wildcard_probability` scalar. Both
-are validated against the model: a suffix must name a user type the relation
-directly accepts, and a wildcard-probability key must name a relation that
-actually has a wildcard ref. `keys_distribution: {values: [...], weights:
-[...]}` on a condition param draws map/list sizes per tuple (empty weights =
-uniform; mutually exclusive with `keys`). Determinism is preserved by
-construction: the per-type fanout lookup and per-relation probability lookup
-replace constants without changing draw counts, and the distribution draw
-only consumes RNG when configured — a unit test confirms no-op knobs produce
-a byte-identical tuple graph. Unit tests cover the zero-direct-users /
-userset-only shape, per-relation wildcard suppression, and a bimodal 1-or-8
-map-size distribution; verified end-to-end with a shaped smoke config
-(suffixed fanout + per-relation wildcard prob + bimodal keys) and the plain
-example config, both with zero errors and zero mismatches.
-
-### 13. Mismatch diagnostics ✅
-
-**Motivation.** `verify_results` counts mismatches but discards *which* checks
-mismatched, making the most alarming number in the report uninvestigable.
-
-**Sketch.** Collect mismatched corpus entries (deduplicated, capped at e.g.
-100) with observed-vs-expected, and write `results/mismatches-<stamp>.json`
-when nonzero. Mention the file in the findings doc.
-
-**Files.** `load.go`, `report.go`.
-
-**Accept.** A run with `MINIMIZE_LATENCY` plus aggressive query caching and
-background churn (item 10) produces an actionable mismatch file.
-
-**Done (2026-06-12).** Workers record mismatched corpus entries
-(observed-vs-expected) into a mutex-guarded recorder — locked only on
-mismatches, so the hot path is untouched — deduplicated by check identity and
-capped at 100. `Report.Save` writes `results/mismatches-<stamp>.json` when
-nonempty, records the path in the results JSON, and the findings doc names
-the file. Sweep runs merge records across steps. Verified mechanically by
-flipping 30 corpus expectations and re-running: 1315 raw mismatches collapsed
-to the 18 distinct flipped checks, all correctly attributed.
+Acceptance: a CI job fails on an injected regression and passes otherwise;
+documented end to end against the compose stack.
 
 ---
 
-## P2 — Breadth and ergonomics
+## P2 — Breadth and polish
 
-### 14. Additional endpoints: `list-objects`, `list-users` ✅
+### 8. Distributed / multi-client load generation
 
-`ListObjects` is OpenFGA's notoriously expensive query and a common production
-pain point; a perf tool that can't measure it is incomplete. Reuse corpus
-subjects/relations: for each entry, ask "which `<object type>` can `<user>`
-`<relation>`?" Expected-result verification is harder (set-valued); start with
-latency-only plus result-count distributions, and gate `verify_results` to
-spot-checks against probe-known allowed pairs (each corpus entry's object
-should appear in the listing when expected=true and consistency allows).
-**Files:** `client.go`, `load.go`, `config.go` (`load.endpoint` enum),
-`report.go`.
+Motivation: a single fgaperf process is bounded by one host's CPU and NIC;
+saturating a large OpenFGA cluster needs several coordinated load generators. The
+merge-able digest from item 1 makes aggregation clean.
 
-**Done (2026-06-13).** `load.endpoint` accepts `list-objects` and `list-users`
-alongside `check`/`batch-check`. `client.go` gained `ListObjects`/`ListUsers`
-(the latter handles the OpenFGA API quirk where ListUsers takes contextual
-tuples as a bare array, not a `tuple_keys` envelope). The load workers reuse
-each corpus entry's (user, relation, object) triple — list-objects asks "which
-`<object type>` can `<user>` `<relation>`?" and list-users the inverse — passing
-through the entry's contextual tuples and context. `Sample.ResultCount` carries
-the returned-set size; the report adds a `result_counts` distribution
-(mean/p50/p90/p99/max, empty-response rate, total) and a "Result-set sizes"
-findings section, since result-set size — not latency alone — is the headline
-cost driver for these endpoints. `verify_results` is a best-effort spot-check
-(the entry's own object/user should appear in its own listing iff probe found it
-allowed; a typed wildcard counts as present for list-users), explicitly
-caveated as truncation-prone. Headline throughput nouns adapt
-(`endpointNoun`). Verified end-to-end against the compose stack: both endpoints
-ran with zero errors and zero verification mismatches, reporting result-set
-distributions (list-objects mean 3.0/max 15; list-users mean 2.4 with 25.6%
-empty). Unit tests cover `summarizeCounts`, `endpointNoun`, and endpoint
-validation; `go test -race` clean.
+Design sketch: simplest first — each process runs the same corpus and store with
+a distinct worker-id RNG offset and emits its own results JSON containing the
+serialized digests (item 1); a new `fgaperf merge results-*.json` combines the
+digests into one coherent report (throughput summed, percentiles merged). A
+coordinator/agent mode can come later if needed.
 
-### 15. CLI flag overrides for common knobs ✅
+Files: new `merge` subcommand; reuse `digest.go`; `report.go` (merge path).
 
-The README currently recommends `sed` for a quick smoke run. Add flags that
-override config after load: `-duration`, `-warmup`, `-rate`, `-concurrency`,
-`-endpoint`, `-consistency`, `-output-dir`. Record overrides in the resolved
-config snapshot (item 9). **Files:** `main.go`, `config.go`.
+Acceptance: two processes against one store produce results that `merge`
+combines into one report whose throughput ≈ the sum and whose percentiles are the
+merged distribution (verified against a single equivalent run within tolerance).
 
-**Done (2026-06-13).** The shared flag block in `main.go` gained `-duration`,
-`-warmup`, `-rate`, `-concurrency`, `-endpoint`, `-consistency`, and
-`-output-dir`. Only flags actually passed (detected via `fs.Visit`) override
-the loaded config; `Config.applyOverrides` applies them and re-runs `validate`,
-so a bad override (`-consistency EVENTUAL`) fails fast. Because overrides mutate
-`cfg` before `Resolved()` is marshaled, they appear in the results JSON's
-`resolved_config` — a run stays reproducible from its output alone. The README's
-`sed` smoke-test recipe is replaced with `-warmup 2s -duration 8s`. Verified
-end-to-end: `all -warmup 2s -duration 5s -concurrency 8` reflected all three in
-the load line and the resolved config. Unit test `TestApplyOverrides` covers
-apply/no-op/bad-override.
+### 9. Soak mode: long-run stability with interim reports
 
-### 16. Latency timeline in the report ✅
+Motivation: hours-long runs surface leaks, cache-eviction cliffs, and datastore
+compaction that a 60s run misses. Today's retain-all-samples model can't sustain
+that (item 1 fixes it) and there is no interim reporting.
 
-Per-second (or per-5s) p50/p99 + throughput series over the measured window,
-as a table in JSON and a sparkline-ish markdown table. Catches cache fill-in,
-GC pauses, and degradation that aggregate percentiles hide; cheap to compute
-from existing samples if each sample records a completion timestamp.
-**Files:** `load.go` (timestamp per sample), `report.go`.
+Design sketch: with item 1's streaming digests, add `load.report_interval`; emit
+a rolling interim findings snapshot at that cadence and rotate the `sample_file`.
+Extend `timelineWidth`'s bucket ladder so multi-hour windows bucket by the minute
+or five.
 
-**Done (2026-06-13).** `buildTimeline` (in `report.go`) buckets the measured
-samples by completion time, anchored at the first measured sample. Bucket width
-adapts (`timelineWidth`) so any run is ~12 rows: 1s for smoke runs, up to 1
-minute for hour-long runs. Each bucket carries requests, throughput (items ÷
-width), p50, p99, and errors; the series is `timeline` in the results JSON and a
-"Latency over time" markdown section with a p99 sparkline bar scaled to the
-worst bucket. For sweeps it reflects the knee step (built in `BuildReport`,
-which `BuildSweepReport` calls on the headline result). No `load.go` change was
-needed — samples already record `Completed` (P0 item 3). Verified live: a 10s
-run surfaced the cache fill-in spike (t+0s p99 15.8ms vs steady-state ~8.5ms).
-Unit tests `TestTimelineWidth` and `TestBuildTimeline` cover width selection,
-bucketing, item-based throughput, and the empty case.
+Files: `load.go` (interim emit, file rotation); `report.go` (`timelineWidth`).
 
-### 17. Optional raw sample export ✅
+Acceptance: a multi-minute run emits interim reports at the configured cadence
+with flat memory; the final report covers the whole window; timeline rows stay
+~12 regardless of duration.
 
-`load.sample_file: samples.jsonl.gz` dumping per-sample target, latency,
-outcome class, timestamp — for users who want their own analysis. Off by
-default; write from the existing single collector goroutine to keep the hot
-path clean. **Files:** `load.go`, `config.go`.
+### 10. Statistical significance in `compare`
 
-**Done (2026-06-13).** `load.sample_file` (default unset) streams one
-`SampleRecord` JSON line per measured sample (completion time, target, offered
-rate, service + response latency, items, conditioned/contextual tags, error
-class, mismatch). A `.gz` suffix wraps the stream in gzip. The `sampleWriter` is
-created and closed entirely in RunLoad's single collector goroutine, so the
-request hot path is untouched and no locking is needed; warmup samples are
-already excluded upstream. A sweep's steps share one file via an unexported
-`sampleAppend` flag (RunLoad opens with `O_APPEND` for steps after the first;
-gzip multistream decodes the concatenation transparently). Documented in the
-annotated example config and the configuration reference. Unit test
-`TestSampleWriterGzipRoundTrip` covers the gzip round-trip and append/concat;
-verified end-to-end (20k records, valid JSONL, gzip-decodable).
+Motivation: a p99 delta between two single runs may be noise. Today `compare`
+reports the delta with no sense of whether it's meaningful.
 
-### 18. gRPC client option — deferred (2026-06-13)
+Design sketch: add a `repeat: N` run mode producing N results, and have `compare`
+(or a `summarize`) report mean ± stdev per metric and label a delta "significant"
+only when it exceeds observed run-to-run variance. Pairs naturally with reporting
+percentile confidence from the repeated runs.
 
-Production callers typically use gRPC SDKs; HTTP-only measurement may
-overstate latency. The bundled compose already exposes `:8081`. Keep the HTTP
-client as default and the abstraction minimal: an interface over
-`Check`/`BatchCheck` only, selected by `openfga.protocol: http|grpc`. This
-pulls in protobuf deps — weigh against the "thin client" principle and keep it
-strictly optional at build or config level. **Files:** `client.go`, new
-`client_grpc.go`, `config.go`.
+Files: `main.go` (repeat mode); `compare.go`; `report.go`.
 
-**Deferred pending owner decision (2026-06-13).** Unlike every other P2 item,
-this one fundamentally changes the project's dependency posture: today `go.mod`
-has a single dependency (`gopkg.in/yaml.v3`) and `go.sum` is 3 lines. A gRPC
-client pulls in `google.golang.org/grpc`, `google.golang.org/protobuf`, and the
-OpenFGA proto module (`github.com/openfga/api/proto` or the Go SDK), growing
-`go.sum` to hundreds of lines and broadening the supply-chain surface on a
-public repo. A `grpc` build tag would keep the *default binary* lean but does
-not keep the deps out of `go.mod`/`go.sum` (`go mod tidy` tracks tagged imports
-too). Because this is a one-way, outward-facing decision in tension with design
-principle #3 (thin hot path, no SDK), it was held for explicit sign-off rather
-than pulled in unilaterally. The other eight P2 breadth items are complete.
+Acceptance: comparing two sets of repeated runs labels each metric delta as
+"significant" or "within noise" from the observed variance.
 
-### 19. OIDC auth ✅
+### 11. HTML / visual report
 
-Only pre-shared-key auth is supported. Managed/cloud FGA deployments use OIDC
-client-credentials. Token fetch + refresh outside the hot path (background
-refresh well before expiry so no request ever pays the token cost).
-**Files:** `client.go`, `config.go`.
+Motivation: the markdown findings are ideal for terminals and PRs, but a
+self-contained HTML with charts (sweep curve, latency-over-time, distribution
+CDF) is far more digestible for stakeholders and capacity reviews.
 
-**Done (2026-06-13).** `openfga.oidc` (`token_url`, `client_id`,
-`client_secret`, optional `audience`/`scopes`) selects OAuth2
-client-credentials auth, mutually exclusive with `api_token` (validated). A
-`tokenSource` in `client.go` does a synchronous initial fetch in
-`NewFGAClient`, then refreshes ~30s before expiry from a background goroutine,
-so the request path only ever reads a cached token under a read lock — no
-request pays the fetch cost. A never-succeeded token surfaces the real fetch
-error on the request (`OIDC auth: …`) instead of a bare 401. Token fetches use
-a separate `http.Client`, not the tuned load transport. `client_secret` is
-redacted in the resolved-config snapshot. Documented in the annotated example
-config and the configuration reference. Tests (`TestOIDCTokenFlow`,
-`TestOIDCTokenError`, `TestOIDCConfig`) use httptest token/API servers to assert
-the bearer is attached, audience/scope are forwarded, fetch failures surface
-clearly, and the secret is redacted; `-race` clean.
+Design sketch: emit an optional `report.html` alongside the JSON/MD — a single
+self-contained file with inline SVG charts generated from the same `Report`
+struct, no external assets or network. Headline charts: the sweep knee curve, the
+latency timeline, and per-relation latency bars.
 
-### 20. Seeding at scale ✅
+Files: new `report_html.go`; `main.go` `run()` (emit alongside, behind a flag or
+always).
 
-For datasets in the millions of tuples: progress/ETA output during seeding
-(currently silent until done), resumable seeding (record high-water mark in
-the state file), and a `fgaperf plan` subcommand that prints expected tuple
-counts per relation from config alone — no server — so users can sanity-check
-graph size before a long seed. Document (rather than build) the
-seed-once-then-`pg_dump`/restore workflow for repeated large-scale runs.
-**Files:** `seed.go`, `main.go`, README.
+Acceptance: `fgaperf run` writes a self-contained HTML that renders the sweep
+curve, timeline, and per-relation latency offline (no external fetches).
 
-**Done (2026-06-13).** All four parts:
-- **Progress/ETA.** `SeedStore` reports `seeded N/M tuples (…%, … tuples/sec,
-  ETA …)` every 2s from a background goroutine, gated on `isTerminal(stderr)`
-  (new `progress.go` with the TTY check and `fmtETA`) so CI logs stay clean.
-- **Resumable seeding.** `setup` writes a partial state file (store/model IDs,
-  `seed_complete: false`) before seeding and checkpoints a high-water mark as it
-  goes. `setup -resume` reuses the store, skips the written prefix, and
-  continues. Correctness rests on a `batchWatermark` that only advances over a
-  contiguous-from-zero run of completed batches, so the checkpoint is always a
-  clean tuple prefix (a failed batch halts it). Because batches are atomic and
-  generation is deterministic, batches re-sent past the prefix that had already
-  committed are detected via `isDuplicateWriteErr` ("already exists") and
-  tolerated — no tuple is written twice, none is lost. `TestSeedStoreResume`
-  (httptest server modeling OpenFGA's transactional duplicate rejection) and
-  `TestBatchWatermark` cover this; `-race -count=3` clean.
-- **`fgaperf plan`.** New `plan.go` / subcommand: server-free, prints per-type
-  instance counts and an upper-bound per-relation tuple estimate
-  (`planTupleCounts` mirrors `GenerateTuples`' fanout logic) plus the probe
-  budget. Verified: its 2875 estimate brackets the actual 2780 seeded for the
-  example model. `TestPlanTupleCounts` covers the estimate and contextual
-  exclusion.
-- **pg_dump workflow** documented in a new README "Seeding at scale" section,
-  alongside `plan`, the progress line, and `-resume`.
+### 12. Mixed-endpoint workloads
 
-SeedStore was rewritten from a simple fan-out to a job/result pipeline to track
-the watermark; the happy path is unchanged and the full `all` pipeline verified
-end-to-end (zero errors/mismatches).
+Motivation: real services blend `check`, `batch-check`, and list calls; a run is
+single-endpoint today, so blended contention is unmeasurable.
 
-### 21. CI hardening ✅
+Design sketch: let `load.endpoint` also accept a weighted set (e.g.
+`check: 70, list-objects: 20, batch-check: 10`); the worker picks an endpoint per
+request by weight, reusing the `corpusPicker` weighting pattern. The report splits
+percentiles per endpoint.
 
-- Matrix the integration job across OpenFGA versions (pinned current +
-  `latest`) to catch API drift early.
-- Ensure the example model used in CI exercises every generator feature:
-  conditions with map params, wildcard-with-condition, userset subjects,
-  intersection, exclusion, and a contextual relation — so regressions in
-  `seed.go`/`probe.go` fail CI rather than surfacing only against private
-  models.
-- Add a golden test for `Report.Markdown()` with a fixed `Report` struct.
-- Run the race detector (`go test -race`) — the load path is concurrent.
-**Files:** `.github/workflows/ci.yaml`, `examples/`, `report_test.go` (new).
+Files: `config.go` (parse + validate the weighted form); `load.go` (per-request
+dispatch); `report.go` (per-endpoint split).
 
-**Done (2026-06-13).** The `test` CI job now runs `go test -race ./...`. The
-`integration` job is matrixed across `v1.17.1` and `latest` (fail-fast off) and
-uses the new `-warmup/-duration/-endpoint` flags instead of the `sed` dance; it
-also runs `list-objects` and `list-users` so endpoint regressions fail CI. The
-example model gained the one missing generator feature, **exclusion**:
-`document#can_view = viewer but not blocked` (plus a direct `document#blocked`),
-joining the existing intersection / union / tuple-to-userset / userset-subject /
-conditioned-wildcard coverage — verified by a script over the compiled JSON.
-`Report.Markdown()` is now deterministic (the Client row reads `r.Environment`
-instead of live `runtime.*`); `TestMarkdownGolden` renders a fixed `Report`
-against `testdata/findings.golden.md` with a `-update` flag to refresh.
-`TestConditionedFixpoint` was extended to assert the exclusion propagates the
-condition (`can_view` CEL-reachable via its `viewer` base, `blocked` not), and
-the relation-count assertion bumped 10→12. Fixed a bug this surfaced:
-`summarizeCounts` treated check samples (default `ResultCount` 0) as
-zero-result list responses — non-list constructors now default `ResultCount` to
--1, and the raw export carries `result_count` only for list endpoints. Verified
-end-to-end against the compose stack (check + both list endpoints, zero
-errors/mismatches); `go test -race` clean.
+Acceptance: a mixed-endpoint config exercises all selected endpoints at the
+configured shares and reports per-endpoint percentiles; single-endpoint behavior
+is unchanged.
 
-### 22. Docs: a short benchmarking-methodology page ✅
+### 13. Review cleanups (small, independent)
 
-A `docs/methodology.md` covering: closed-loop vs fixed-rate (when each lies to
-you), coordinated omission, warmup and cache-fill, corpus uniqueness vs query
-caching, why `HIGHER_CONSISTENCY` probing + `MINIMIZE_LATENCY` load can
-legitimately mismatch, client/server co-location, and "change one variable per
-run". Link it from the findings doc's caveats section. **Files:** `docs/`,
-`report.go`, README.
+Carried over from the post-audit review — none are correctness bugs, all are
+low-risk hygiene.
 
-**Done (2026-06-13).** `docs/methodology.md` covers all eight topics, each
-cross-referenced to the specific fgaperf feature that addresses it (the
-service-vs-response-latency split for coordinated omission, the Latency-over-time
-section for warmup adequacy, `probe.max_duplication` for corpus uniqueness,
-`compare` + `random_seed` for one-variable-at-a-time). The findings doc's
-caveats section links to it (absolute GitHub URL, since findings docs travel
-away from the repo), and the README links it from the closed-loop/fixed-rate
-discussion. Uses only example-model/generic terms — no leaked entitlement
-vocabulary. Verified the link renders in a fresh findings doc.
-
----
-
-## P2 — User-friendliness and onboarding
-
-These items lower the bar for users who aren't already fluent in OpenFGA or
-performance testing. None are correctness fixes; all of them reduce
-time-to-first-useful-run or time-to-understand-the-numbers. The README
-glossary, annotated `examples/config.yaml`, `docs/configuration-reference.md`,
-findings-doc inline explainers, footer legend, and expanded `inspect` legend
-already landed (2026-06-13); the items below are the next layer.
-
-**Status: items 23–35 done (2026-06-13).** Implemented live terminal progress,
-`doctor`, actionable errors, expanded plan/validate, generated findings
-summaries and suggestions, terminal color, onboarding docs, per-command help,
-badges, troubleshooting docs, and `inspect --json`. Verified with `gofmt`,
-`go test ./...`, `go vet ./...`, and CLI smoke checks listed in the final
-session notes. Per-item notes below.
-
-### 23. Live progress during probe and load phases ✅
-
-**Motivation.** After the header line, `probe` and `run` are silent for
-seconds to minutes. A first-time user can't tell the difference between
-"working" and "hung", and an experienced user can't tell early whether the
-run will need to be killed and reconfigured. Item 20 covers the same idea for
-`setup`; this item covers probe and load.
-
-**Sketch.**
-- `probe`: print `probed N/M targets, current target: T (allowed/denied so
-  far: A/D)` every ~2s from a background goroutine. Compute remaining ETA
-  from rolling probe latency.
-- `run`: print `t+12s of 60s | 4892 req/s | p99 7.8ms | 0 errors` every
-  ~5s. During warmup, label the line `warmup` and zero the percentiles so a
-  user knows they're not the headline number.
-- Detect non-TTY (`!isatty(stderr)`) and skip the live output, so CI logs
-  stay clean.
-
-**Files.** `probe.go`, `load.go`, possibly new `progress.go` for the rolling
-window.
-
-**Accept.** A `fgaperf all` run with no terminal output flag continuously
-prints progress lines; a `fgaperf all 2>/dev/null | cat` run produces only
-the existing summary lines.
-
-**Done (2026-06-13).** Probe classification now runs a terminal-only progress
-line (`probe: N/M checks | current T | allowed/denied A/D | ETA ...`) and the
-load collector runs a terminal-only warmup/measured heartbeat with throughput,
-p99, and errors. Both reuse `isTerminal(os.Stderr)` and clear their carriage
-return line on completion, so redirected stderr stays quiet.
-
-### 24. `fgaperf doctor` / pre-flight checks ✅
-
-**Motivation.** New users hit the same handful of failure modes before they
-ever get to a measurement: OpenFGA not running, wrong port, no permissions to
-create stores, metrics endpoint not exposed, datastore is `memory` (so
-numbers are useless), model JSON doesn't match the running OpenFGA version.
-Diagnose them once, up front.
-
-**Sketch.** `fgaperf doctor -config config.yaml` runs a checklist and prints
-a pass/fail line per check with an actionable hint on each fail:
-- HTTP reachability to `openfga.api_url`.
-- `CreateStore` + `DeleteStore` round-trip with a temp name.
-- Model file parses; `WriteModel` to the temp store succeeds.
-- `metrics.prometheus_url` reachable (when set), with required metric
-  families present (`openfga_request_duration_ms`,
-  `openfga_datastore_query_count`).
-- Server reports a non-`memory` datastore if we can determine it from
-  metrics labels (warn, not fail, since it's only detectable indirectly).
-- A pre-flight short-form lives inside `setup`/`run`/`all` too: on
-  connection refused, print "OpenFGA not reachable at <url> — try `docker
-  compose ps`" instead of a bare error.
-
-**Files.** New `doctor.go`, `main.go`, `client.go` (a few capability probes).
-
-**Accept.** With the compose stack stopped, `fgaperf doctor` prints a clear
-"OpenFGA not reachable at http://localhost:8080 — run `docker compose up
--d`" message and exits non-zero; with the stack running, every check
-passes.
-
-**Done (2026-06-13).** Added `fgaperf doctor`, which checks model parsing,
-config/model compatibility, API reachability, temp store create/delete, model
-write, and required Prometheus metric families when configured. Connection
-failures reuse the new localhost hint (`docker compose up -d`, `docker compose
-ps`). `setup`/`run`/`all` also wrap connection failures with the same
-pre-flight hint.
-
-### 25. Actionable error wrapping ✅
-
-**Motivation.** Today's errors are technically accurate but
-unhelpful-on-the-first-read. "store not found" doesn't tell a user the state
-file is stale; a YAML `unknown field` error doesn't suggest the nearest known
-key; a `connection refused` from the load phase doesn't suggest port
-checking. Each unfriendly error is a stall.
-
-**Sketch.**
-- YAML `KnownFields` rejection: catch and re-emit with line/column (already
-  available from `yaml.v3`'s position info) plus a Levenshtein-nearest
-  known key from the schema (e.g. "did you mean `allowed_ratio`?").
-- "store not found" / 404 on the recorded store ID: suggest "ran
-  `fgaperf cleanup` to clear stale `.fgaperf-state.json`?".
-- Connection refused / dial timeout: include `openfga.api_url` and
-  suggest `docker compose ps` if the URL is localhost.
-- Unauthorized (401/403): suggest `openfga.api_token` and the
-  `OPENFGA_AUTHN_METHOD` server flag.
-- Model file missing or unparseable: print the exact path searched and the
-  CLI command to produce it (`fga model transform`).
-
-**Files.** `main.go`, `client.go`, `config.go`. Consider a small
-`errors.go` for the suggestion helpers.
-
-**Accept.** Each of the five error classes above produces a message naming
-the suspected cause and the command to verify or fix it.
-
-**Done (2026-06-13).** Config parsing now rewrites YAML unknown-field failures
-with the bad key, line number, and nearest YAML-key suggestion. Runtime errors
-gain hints for stale state/store 404s, connection refused/timeouts, 401/403
-auth mismatches, and missing/unparseable model files with the `fga model
-transform` command.
-
-### 26. `fgaperf plan` — server-free dry run ✅
-
-**Motivation.** Users iterate on their config blind: they tweak fanout,
-cohorts, or probe targets and have to spin up a full run (or do mental math
-across `seed.go`) to know what they actually configured. A no-server preview
-collapses the loop. Distinct from item 20's seeding-at-scale focus — this is
-for configuration iteration, not large-deployment planning.
-
-**Sketch.** `fgaperf plan -config config.yaml` loads the model + config,
-applies defaults, runs `validate` and `validateAgainstModel`, then prints:
-- The resolved config (post-defaults YAML, secrets redacted) — same payload
-  `compare` uses.
-- Per-type instance counts and totals.
-- Per-relation expected tuple counts (from fanout × instance counts ×
-  accepted user types), with totals.
-- Probe sample budget: targets × `samples_per_target`, plus expected
-  corpus size after resampling.
-- A duration estimate for the load phase only (warmup + duration).
-- Warnings: probe targets that would produce ~0 corpus entries (no
-  assignable refs reachable), conditions referenced without a `pools`
-  entry, etc.
-
-Add `fgaperf validate -config X` as an alias that runs only the
-validation/resolved-config print, no estimates.
-
-**Files.** New `plan.go`, `main.go`, `seed.go` (expose expected-count
-calculators without generating tuples).
-
-**Accept.** Running `fgaperf plan` on `examples/config.yaml` exits 0 with a
-report whose tuple-count totals match what an actual `setup` would seed;
-running it on a config whose `probe.targets` includes a relation with no
-assignable subjects prints a warning naming the target.
-
-**Done (2026-06-13).** `plan` now prints the redacted resolved config,
-per-type instances, per-relation tuple estimates, probe budget, load time
-budget, and warnings for probe targets with no reachable direct tuple path.
-Added `fgaperf validate` as the validation/resolved-config-only alias.
-
-### 27. Findings TL;DR headline line ✅
-
-**Motivation.** The findings doc is dense. A reader who just wants the
-upshot — to paste into a Slack message or compare to last week's run —
-should not have to scroll. Sweep runs already get a knee-rate sentence;
-fixed-rate and closed-loop runs deserve the same.
-
-**Sketch.** A single-paragraph "Summary" section between the test
-configuration table and headline results, with three to five facts:
-sustained throughput, p99, CEL-vs-unconditioned delta, mismatch count,
-notable callout (saturation, errors, write churn). Sweep runs get a knee
-line in the same slot. Keep it generated, not hand-written — same template
-filled with the headline numbers already in `Report`.
-
-**Files.** `report.go`.
-
-**Accept.** Every findings doc starts with a one-paragraph summary; the
-example findings doc gains a summary that names throughput, p99, and the
-zero-mismatch result.
-
-**Done (2026-06-13).** Findings now include a generated `## Summary` after the
-configuration table. It names sweep knee or sustained throughput, client p99,
-server datastore queries/request when available, mismatch count, errors,
-saturation, and write churn when relevant.
-
-### 28. "What you might change" hints in findings ✅
-
-**Motivation.** The findings doc reports what happened; it doesn't suggest
-what to do about it. The most common failure of a first run isn't the
-server's fault — it's a config that produced an unrepresentative corpus or
-the wrong probe target mix. A heuristic suggestion section turns the report
-into a guide for the next run.
-
-**Sketch.** A new `## Suggestions` section, only rendered when at least one
-heuristic fires. Conservative phrasing ("consider", not "do"). Initial
-rules:
-- Corpus duplication > 2x on any target → suggest raising
-  `probe.samples_per_target` or setting `allowed_ratio: -1` for that
-  target's natural mix.
-- Achieved < 98% of offered on a non-sweep fixed-rate run → suggest a
-  sweep across rates below the offered one.
-- Mismatches > 0 with `MINIMIZE_LATENCY` and `write_rate > 0` → call it
-  expected (cache invalidation lag) and point at `HIGHER_CONSISTENCY` if
-  fresh reads matter.
-- Server-side p99 ≪ client p99 → suggest checking client/server
-  co-location.
-- `seed.cohort_bias` low (< 0.5) on a model with intersections →
-  suggest raising it (corpus likely all-denied).
-- Closed-loop run on a model with `load.write_rate: 0` → mention sweep
-  + write_rate as the more realistic measurement.
-
-Each rule is one function `(r *Report, cfg *Config) (string, bool)`; the
-section iterates the registered rules. Easy to extend later.
-
-**Files.** `report.go`, possibly a new `suggestions.go`.
-
-**Accept.** Re-running the example config produces zero suggestions
-(healthy run); a deliberately broken config (cohort_bias 0.1, intersection
-target) produces a Suggestions section naming cohort_bias.
-
-**Done (2026-06-13).** Added a conservative generated `## Suggestions` section
-that renders only when a rule fires: per-target corpus duplication >2x,
-fixed-rate saturation, churn + `MINIMIZE_LATENCY` mismatches, client p99 far
-above server-side p99, or `probe.cohort_bias < 0.5`. Healthy example-style
-runs stay quiet.
-
-### 29. ANSI color and bold on isatty stdout/stderr ✅
-
-**Motivation.** Pure polish, but disproportionate. Headline numbers in
-bold, errors in red, warnings in yellow, and the most common new-user
-failure (compose stack down) gets a tinted help block. Turns "this feels
-like a hobby tool" into "this feels supported".
-
-**Sketch.** A tiny color helper (`color.Bold(s)`, `color.Red(s)`,
-`color.Yellow(s)`, `color.Dim(s)`) that no-ops when
-`!isatty(fd)` or `NO_COLOR` is set (https://no-color.org). Apply to:
-- Per-phase summary lines (`throughput:`, `server:`, etc.).
-- Doctor checklist (✓/✗ in green/red).
-- The probe duplication warning (yellow).
-- `fail()` output (red).
-- Findings markdown stays plain — pipes and editors render that.
-
-**Files.** New `color.go`, `main.go`, `probe.go`, `load.go`.
-
-**Accept.** `fgaperf all | cat` produces output with no ANSI escapes;
-running it directly in a terminal shows bold headline numbers and a
-red error if the server is unreachable.
-
-**Done (2026-06-13).** Added a tiny terminal-style helper that no-ops when
-stdout/stderr is not a TTY or `NO_COLOR` is set. Applied bold labels to
-terminal summaries, yellow warnings to probe/config hints, red failures, and
-colored doctor statuses. Findings markdown remains plain.
-
-### 30. `docs/getting-started.md` — narrative walkthrough ✅
-
-**Motivation.** The README is reference-shaped. A reader who is new to
-OpenFGA, has a model, and just wants to know "what do I do next" needs a
-linear walkthrough. Keeps the README focused on reference; the new doc
-covers the path through the tool.
-
-**Sketch.** ~600 words, in order:
-1. What fgaperf measures (one paragraph; link to README glossary).
-2. Bring up the server (compose link).
-3. `fgaperf inspect` against the example model; explain the output.
-4. First smoke run (`all` with shortened warmup/duration).
-5. Reading the findings doc: walk the example findings end-to-end with
-   "this number means…".
-6. One tuning loop: bump `seed.cohorts`, rerun, `fgaperf compare`.
-7. Where to go next (configuration reference, methodology page).
-
-Link from the README's Quick Start.
-
-**Files.** New `docs/getting-started.md`, README.
-
-**Accept.** A reader following the doc top-to-bottom against a fresh
-clone reaches a successful smoke run and a comparison without consulting
-the README reference once.
-
-**Done (2026-06-13).** Added `docs/getting-started.md` with a linear path:
-doctor, inspect, smoke run, reading findings, one tuning loop, and compare.
-Linked it from Quick Start.
-
-### 31. `docs/recipes.md` — short configuration recipes ✅
-
-**Motivation.** Most users come in with a specific question, not a desire
-to learn the whole tool. A recipe page indexes the tool by question.
-
-**Sketch.** One recipe per common scenario, each 5–10 lines of YAML plus
-one explanatory paragraph:
-- Find this server's max sustained throughput.
-- Measure cache impact (`MINIMIZE_LATENCY` vs `HIGHER_CONSISTENCY`,
-  same store).
-- Compare two model versions (same load, two model files).
-- Test under realistic write churn.
-- Spot a hot relation (probe targets weighted to one).
-- Reproduce a noisy run exactly (`random_seed`).
-- Run before/after a server upgrade.
-
-Cross-link to relevant configuration-reference sections.
-
-**Files.** New `docs/recipes.md`, README.
-
-**Accept.** Each recipe runs as-is against the bundled compose stack and
-produces a non-trivial findings doc (zero mismatches, populated tables).
-
-**Done (2026-06-13).** Added `docs/recipes.md` covering sweep/knee, cache
-impact, model-version comparison, write churn, hot-relation weighting,
-reproducibility with `random_seed`/samples, and server upgrades, with links
-back to the configuration reference and methodology.
-
-### 32. Per-subcommand `--help` with examples ✅
-
-**Motivation.** `fgaperf` with no args prints a one-line usage. Each
-subcommand should print its purpose, flags, one worked example, and the
-most common gotcha — at the moment the user is one keystroke from
-needing it.
-
-**Sketch.** Replace the single `flag.NewFlagSet` per subcommand with a
-small map of `(name, summary, longHelp, flags, example)`. `fgaperf
-<cmd> -h` prints the long form; `fgaperf -h` lists subcommand summaries
-and points at `<cmd> -h` for each.
-
-Examples worth writing into help text:
-- `setup -h`: "writes `.fgaperf-state.json`; needs OpenFGA reachable;
-  re-running creates a fresh store".
-- `probe -h`: "needs `setup` to have run; reads model + state, writes
-  `corpus.json`".
-- `run -h`: gotcha — "needs both setup and probe; sweep and rate are
-  mutually exclusive".
-- `cleanup -h`: gotcha — "`-all-stores` deletes by name, not by ID; use
-  when state file is gone".
-
-**Files.** `main.go`.
-
-**Accept.** Every subcommand responds to `-h` with the long-form help,
-including a worked example; `fgaperf -h` lists every subcommand with its
-one-line summary.
-
-**Done (2026-06-13).** Added root and per-subcommand help text with summaries,
-details, worked examples, and gotchas. `fgaperf -h` lists all commands, and
-`fgaperf <cmd> -h` prints command-specific help.
-
-### 33. README status badges ✅
-
-**Motivation.** Quick visual signal that the project is alive and
-configured. Costs nothing to add.
-
-**Sketch.** Add badges to the README header for: CI status (GitHub
-Actions), license (Apache-2.0), Go version (from `go.mod`). Shield.io
-URLs only; no external trackers.
-
-**Files.** `README.md`.
-
-**Accept.** README renders with three badges above the intro paragraph;
-the CI badge reflects `main`'s actual state.
-
-**Done (2026-06-13).** README now shows CI, Apache-2.0 license, and Go version
-badges above the intro paragraph.
-
-### 34. `docs/troubleshooting.md` — common failure modes ✅
-
-**Motivation.** Even with item 25 (actionable errors), users will hit
-multi-step problems that need a paragraph, not a one-line hint. Five
-problem/fix entries cover most first-week issues.
-
-**Sketch.** Five entries, problem → diagnosis → fix:
-1. "OpenFGA not reachable" (port mismatch, docker not started,
-   colima/docker context).
-2. "Store not found" mid-run (state file stale, `cleanup`).
-3. "Probe corpus is empty / all-denied" (cohort_bias, target with no
-   assignable refs, model mismatch).
-4. "Verification mismatches under churn" (cache + consistency tradeoff;
-   when it's expected vs a real bug).
-5. "Numbers don't match production" (datastore type, client placement,
-   warmup too short).
-
-Each links to the relevant configuration-reference section.
-
-**Files.** New `docs/troubleshooting.md`, README.
-
-**Accept.** Each of the five scenarios has a complete walkthrough; the
-README links to the doc from a new "If something goes wrong" line near
-Quick Start.
-
-**Done (2026-06-13).** Added `docs/troubleshooting.md` for OpenFGA
-reachability, stale store state, empty/all-denied corpora, mismatches under
-churn, and production-number drift. README Quick Start links to it.
-
-### 35. `fgaperf inspect --json` ✅
-
-**Motivation.** Today `inspect` prints a terminal-formatted summary;
-users with their own tooling have to re-parse the model JSON from
-scratch to get the same information (assignable relations, CEL
-reachability, condition param split). Emitting the analysis as JSON
-makes the tool composable.
-
-**Sketch.** A `--json` flag on `inspect` that prints the `Analysis`
-struct (or a serialization-friendly projection of it: types, relations
-with `[assignable, CEL, contextual]` tags, conditions with param
-splits) as JSON to stdout and skips the human-readable summary. Stable
-schema (this is now an API surface for downstream tools).
-
-**Files.** `main.go`, `model.go` (a `MarshalJSON` projection on
-`Analysis` if the natural shape isn't right).
-
-**Accept.** `fgaperf inspect --json -config examples/config.yaml | jq
-'.relations[] | select(.tags | contains(["CEL"])) | .key'` lists the
-CEL-reachable relations.
-
-**Done (2026-06-13).** Added `inspect -json`/`inspect --json` with a stable
-projection: schema version, types, subject types, relations with
-`assignable`/`CEL`/`contextual` tags and direct refs, plus condition parameter
-splits.
+- **C1. UTF-8-safe `truncate`** (`client.go`) — truncating an error body at a
+  byte boundary can emit an invalid-UTF-8 tail into `ErrorSamples`. Trim on a
+  rune boundary (`utf8.DecodeLastRuneInString` back-off). _Review observation #2._
+- **C2. Guard `runAll` store deletion with `sync.Once`** (`main.go`) — a SIGINT
+  landing during the normal-exit `deleteStore` defer can double-call
+  `DeleteStore` (harmless 404 warning) and races `os.Exit(1)`. A `sync.Once`
+  around `deleteStore` tidies it. _Review observation #3._
+- **C3.** (Subsumed by item 1 — the progress re-summarize cost. _Review
+  observation #1._)
+- **C4. Document the metrics counter-reset clamp** (`metrics.go`) — `max(0, …)`
+  per bucket can break histogram monotonicity after a mid-run counter reset
+  (server restart), where results are already invalid. A one-line comment or a
+  "counter reset detected; server-side view suppressed" guard. _Review
+  observation #4._
+
+Acceptance: `truncate` never emits a partial rune (unit test with multi-byte
+input); a simulated interrupt during `runAll` cleanup deletes the store exactly
+once; metrics behavior on counter reset is documented or guarded.
 
 ---
 
 ## Suggested sequencing
 
-1. **Trust the numbers:** items 1–5 (small, mostly independent diffs).
-2. **See the server side:** item 6, then 9 (both feed everything later).
-3. **Answer the capacity question:** items 7 and 8 together — sweep produces
-   the data, compare makes it consumable.
-4. **Realism:** items 10–13 as needed by actual investigations.
-5. **Breadth:** P2 items opportunistically; item 14 (`list-objects`) first if
-   any consumer of the tool uses that API in production.
-6. **User-friendliness:** items 23, 25, 24 first (live progress, actionable
-   errors, doctor) — they remove the most common first-run stalls. Then
-   27 + 28 (findings TL;DR and suggestions) to make output self-explanatory.
-   Then 30 + 31 + 34 (docs walkthrough, recipes, troubleshooting) to round
-   out onboarding. 26 (`plan`) and 32 (per-subcommand help) are independent
-   and small enough to slot in anywhere. 29 (color) and 33 (badges) are
-   polish; 35 (`inspect --json`) only when a downstream tool needs it.
+1. **Unlock scale and fidelity first:** item 1 (streaming digests) — it removes
+   the memory ceiling and the progress cost, and is a prerequisite for items 8
+   and 9.
+2. **Build the regression substrate:** item 2, then item 7 — baseline compare,
+   then the CI gate that consumes it.
+3. **Realism, by demand:** items 3 (Poisson), 5 (replay), and 4 (gRPC) in
+   whatever order matches the questions you actually need to answer; 6
+   (per-relation DS attribution) whenever a capacity question gets specific.
+4. **Breadth:** items 8–12 opportunistically. Item 8 (distributed) and 9 (soak)
+   both lean on item 1. Item 11 (HTML) is independent. Item 10 (significance)
+   wants a repeat-run mode.
+5. **Cleanups:** item 13 anytime; C1/C2 are a few lines each.
 
 ## Invariants to re-verify after any change
 
-- `go vet ./... && go test ./...` clean.
+- `go vet ./... && go test ./...` clean; CI's `-race` job clean.
 - `./fgaperf all` with the example config against a fresh local OpenFGA
   completes, deletes its store, and writes both result files.
 - Same `random_seed` + same config ⇒ identical generated tuples and corpus
-  candidates (determinism is part of the contract; add a regression test that
-  hashes generated tuples for a fixed config if generation code is touched).
+  candidates. Determinism is part of the contract; if generation code is
+  touched, add/keep a regression test that hashes generated tuples for a fixed
+  config.
 - No type, relation, right, or tenant names from any private model appear in
   code, examples, docs, or this file. Private inputs live only in gitignored
   paths (`main-model.json`, `config.yaml`, `models/`, `tests/`).
+
+## Completed in v1
+
+All shipped and verified (full per-item notes in git history; ✅ in the prior
+plan). Listed so this file stays a complete record of scope.
+
+**P0 — Measurement correctness:** (1) fixed-rate coordinated-omission correction,
+(2) corpus duplication reporting + bound, (3) measured-wall-clock throughput,
+(4) error visibility, (5) strict config validation.
+
+**P1 — Capability:** (6) server-side Prometheus metrics, (7) rate-sweep knee
+detection, (8) `compare` A/B reporting, (9) embedded resolved config + environment
+in results, (10) mixed read/write (background churn), (11) per-target workload
+weights, (12) richer generation shapes (per-user-type fanout, value
+distributions), (13) mismatch diagnostics.
+
+**P2 — Breadth & ergonomics:** (14) `list-objects`/`list-users` endpoints,
+(15) CLI flag overrides, (16) latency timeline, (17) raw sample export,
+(18) gRPC — _deferred; revived as item 4 above_, (19) OIDC auth, (20) seeding at
+scale, (21) CI hardening, (22) methodology docs.
+
+**P2 — User-friendliness & onboarding:** (23) live progress, (24) `doctor`
+pre-flight, (25) actionable error wrapping, (26) `plan` server-free dry run,
+(27) findings TL;DR headline, (28) "what you might change" hints, (29) ANSI
+color, (30) getting-started walkthrough, (31) recipes, (32) per-subcommand help,
+(33) README badges, (34) troubleshooting docs, (35) `inspect --json`.
