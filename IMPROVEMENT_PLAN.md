@@ -586,7 +586,7 @@ graph size before a long seed. Document (rather than build) the
 seed-once-then-`pg_dump`/restore workflow for repeated large-scale runs.
 **Files:** `seed.go`, `main.go`, README.
 
-### 21. CI hardening
+### 21. CI hardening ✅
 
 - Matrix the integration job across OpenFGA versions (pinned current +
   `latest`) to catch API drift early.
@@ -598,6 +598,26 @@ seed-once-then-`pg_dump`/restore workflow for repeated large-scale runs.
 - Add a golden test for `Report.Markdown()` with a fixed `Report` struct.
 - Run the race detector (`go test -race`) — the load path is concurrent.
 **Files:** `.github/workflows/ci.yaml`, `examples/`, `report_test.go` (new).
+
+**Done (2026-06-13).** The `test` CI job now runs `go test -race ./...`. The
+`integration` job is matrixed across `v1.17.1` and `latest` (fail-fast off) and
+uses the new `-warmup/-duration/-endpoint` flags instead of the `sed` dance; it
+also runs `list-objects` and `list-users` so endpoint regressions fail CI. The
+example model gained the one missing generator feature, **exclusion**:
+`document#can_view = viewer but not blocked` (plus a direct `document#blocked`),
+joining the existing intersection / union / tuple-to-userset / userset-subject /
+conditioned-wildcard coverage — verified by a script over the compiled JSON.
+`Report.Markdown()` is now deterministic (the Client row reads `r.Environment`
+instead of live `runtime.*`); `TestMarkdownGolden` renders a fixed `Report`
+against `testdata/findings.golden.md` with a `-update` flag to refresh.
+`TestConditionedFixpoint` was extended to assert the exclusion propagates the
+condition (`can_view` CEL-reachable via its `viewer` base, `blocked` not), and
+the relation-count assertion bumped 10→12. Fixed a bug this surfaced:
+`summarizeCounts` treated check samples (default `ResultCount` 0) as
+zero-result list responses — non-list constructors now default `ResultCount` to
+-1, and the raw export carries `result_count` only for list endpoints. Verified
+end-to-end against the compose stack (check + both list endpoints, zero
+errors/mismatches); `go test -race` clean.
 
 ### 22. Docs: a short benchmarking-methodology page ✅
 

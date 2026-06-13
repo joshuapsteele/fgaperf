@@ -418,7 +418,7 @@ func (r *Report) Markdown() string {
 	w("| Warmup / measured | %s / %s (actual window %s) |", r.Warmup, r.Duration, r.MeasuredWindow)
 	w("| Seeded tuples | %d |", r.TupleCount)
 	w("| Check corpus | %d entries (%d distinct checks) |", r.CorpusSize, r.CorpusDistinct)
-	w("| Client | %s, %d CPU |", runtime.GOOS+"/"+runtime.GOARCH, runtime.NumCPU())
+	w("| Client | %s, %d CPU |", r.Environment.OS+"/"+r.Environment.Arch, r.Environment.CPUs)
 	w("")
 	w("## Headline results")
 	w("")

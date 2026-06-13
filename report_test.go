@@ -1,9 +1,89 @@
 package main
 
 import (
+	"flag"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
+
+var updateGolden = flag.Bool("update", false, "rewrite testdata golden files")
+
+// fixedReport builds a representative single-run Report with every field set to
+// a constant, so Markdown() renders deterministically for the golden test.
+func fixedReport() *Report {
+	st := func(count int, mean, p50, p90, p95, p99, max time.Duration) Stats {
+		return Stats{Count: count, Items: count, Min: p50 / 2, Mean: mean, P50: p50, P90: p90, P95: p95, P99: p99, Max: max}
+	}
+	mssec := func(n int) time.Duration { return time.Duration(n) * time.Millisecond }
+	return &Report{
+		GeneratedAt:    time.Date(2026, 1, 2, 15, 4, 0, 0, time.UTC),
+		ToolVersion:    toolVersion,
+		APIURL:         "http://localhost:8080",
+		Endpoint:       "check",
+		Consistency:    "MINIMIZE_LATENCY",
+		Concurrency:    16,
+		Warmup:         "10s",
+		Duration:       "1m0s",
+		MeasuredWindow: "1m0.012s",
+		TupleCount:     2481,
+		CorpusSize:     1000,
+		CorpusDistinct: 666,
+		TotalChecks:    300000,
+		Mismatches:     0,
+		Throughput:     4892,
+		Overall:        st(294000, mssec(3), mssec(2), mssec(5), mssec(6), mssec(8), mssec(40)),
+		Conditioned:    st(118000, mssec(4), mssec(3), mssec(6), mssec(7), mssec(10), mssec(38)),
+		Unconditioned:  st(176000, mssec(2), mssec(2), mssec(4), mssec(5), mssec(7), mssec(40)),
+		Contextual:     st(145000, mssec(3), mssec(3), mssec(6), mssec(7), mssec(9), mssec(30)),
+		NoContextual:   st(149000, mssec(2), mssec(2), mssec(4), mssec(5), mssec(7), mssec(40)),
+		ByTarget: map[string]Stats{
+			"document#editor": st(98000, mssec(2), mssec(2), mssec(4), mssec(5), mssec(7), mssec(30)),
+			"document#viewer": st(196000, mssec(3), mssec(3), mssec(6), mssec(7), mssec(9), mssec(40)),
+		},
+		ErrorsByClass: map[string]int64{"5xx": 1, "timeout": 2},
+		ErrorSamples:  []string{"POST /stores/.../check: HTTP 500: internal error"},
+		Server: &ServerMetrics{
+			RequestDuration:       HistogramSummary{Count: 294000, Mean: 2.1, P50: 1.8, P90: 4.2, P95: 5.1, P99: 7.4},
+			DatastoreQueryCount:   HistogramSummary{Count: 294000, Mean: 9.7, P95: 18, P99: 24},
+			TotalDatastoreQueries: 2851800,
+			CheckCacheHits:        120000,
+			CheckCacheTotal:       294000,
+		},
+		Environment:  Environment{OS: "linux", Arch: "amd64", CPUs: 8, GoVersion: "go1.26.4"},
+		SeedDuration: "97ms",
+		SeedRate:     25577,
+		Timeline: []TimelineBucket{
+			{Offset: "t+0s", OffsetSec: 0, Requests: 4195, Throughput: 4195, P50: mssec(3), P99: mssec(16), Errors: 1},
+			{Offset: "t+5s", OffsetSec: 5, Requests: 24700, Throughput: 4940, P50: mssec(2), P99: mssec(8), Errors: 0},
+			{Offset: "t+10s", OffsetSec: 10, Requests: 24640, Throughput: 4928, P50: mssec(2), P99: mssec(8), Errors: 2},
+		},
+	}
+}
+
+// Report.Markdown() must render deterministically; the golden file guards
+// against accidental formatting regressions. Refresh with `go test -update`.
+func TestMarkdownGolden(t *testing.T) {
+	got := fixedReport().Markdown()
+	golden := filepath.Join("testdata", "findings.golden.md")
+	if *updateGolden {
+		if err := os.MkdirAll("testdata", 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(golden, []byte(got), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	want, err := os.ReadFile(golden)
+	if err != nil {
+		t.Fatalf("reading golden (run `go test -update` to create it): %v", err)
+	}
+	if got != string(want) {
+		t.Errorf("Markdown() output drifted from %s; re-run `go test -update` if intended.\n--- got (first 600 bytes) ---\n%.600s", golden, got)
+	}
+}
 
 func TestTimelineWidth(t *testing.T) {
 	cases := []struct {

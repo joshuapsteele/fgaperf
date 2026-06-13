@@ -6,8 +6,8 @@ import (
 )
 
 // The example model is the test fixture: it exercises usersets, tuple-to-
-// userset, a recursive relation, an intersection, contextual tuples, and a
-// conditioned wildcard.
+// userset, a recursive relation, an intersection, an exclusion (can_view =
+// viewer but not blocked), contextual tuples, and a conditioned wildcard.
 func loadExampleModel(t *testing.T) *Analysis {
 	t.Helper()
 	a, err := LoadModel("examples/model.json")
@@ -23,8 +23,8 @@ func TestExampleModelAnalysis(t *testing.T) {
 	if got := len(a.Types); got != 4 {
 		t.Errorf("types: got %d, want 4", got)
 	}
-	if got := len(a.AllRelations); got != 10 {
-		t.Errorf("relations: got %d, want 10", got)
+	if got := len(a.AllRelations); got != 12 {
+		t.Errorf("relations: got %d, want 12", got)
 	}
 	if !reflect.DeepEqual(a.SubjectTypes, []string{"user"}) {
 		t.Errorf("subject types: got %v, want [user]", a.SubjectTypes)
@@ -32,15 +32,18 @@ func TestExampleModelAnalysis(t *testing.T) {
 }
 
 // The conditioned fixpoint must propagate the condition on document#viewer's
-// wildcard through the rewrite graph: can_share intersects with viewer, so it
-// is CEL-reachable; editor and the folder relations are not.
+// wildcard through the rewrite graph: can_share intersects with viewer and
+// can_view subtracts blocked from viewer, so both are CEL-reachable; editor,
+// blocked, and the folder relations are not.
 func TestConditionedFixpoint(t *testing.T) {
 	a := loadExampleModel(t)
 
 	want := map[string]bool{
 		"document#viewer":         true,
 		"document#can_share":      true,
+		"document#can_view":       true, // difference base (viewer) is conditioned
 		"document#editor":         false,
+		"document#blocked":        false,
 		"document#owner":          false,
 		"document#active_context": false,
 		"folder#viewer":           false,

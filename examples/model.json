@@ -7,85 +7,254 @@
   {
    "type": "group",
    "relations": {
-    "member": {"this": {}}
+    "member": {
+     "this": {}
+    }
    },
    "metadata": {
     "relations": {
-     "member": {"directly_related_user_types": [{"type": "user"}]}
+     "member": {
+      "directly_related_user_types": [
+       {
+        "type": "user"
+       }
+      ]
+     }
     }
    }
   },
   {
    "type": "folder",
    "relations": {
-    "owner": {"this": {}},
-    "parent": {"this": {}},
+    "owner": {
+     "this": {}
+    },
+    "parent": {
+     "this": {}
+    },
     "viewer": {
      "union": {
       "child": [
-       {"this": {}},
-       {"computedUserset": {"relation": "owner"}},
-       {"tupleToUserset": {"tupleset": {"relation": "parent"}, "computedUserset": {"relation": "viewer"}}}
+       {
+        "this": {}
+       },
+       {
+        "computedUserset": {
+         "relation": "owner"
+        }
+       },
+       {
+        "tupleToUserset": {
+         "tupleset": {
+          "relation": "parent"
+         },
+         "computedUserset": {
+          "relation": "viewer"
+         }
+        }
+       }
       ]
      }
     }
    },
    "metadata": {
     "relations": {
-     "owner": {"directly_related_user_types": [{"type": "user"}]},
-     "parent": {"directly_related_user_types": [{"type": "folder"}]},
-     "viewer": {"directly_related_user_types": [{"type": "user"}, {"type": "group", "relation": "member"}]}
+     "owner": {
+      "directly_related_user_types": [
+       {
+        "type": "user"
+       }
+      ]
+     },
+     "parent": {
+      "directly_related_user_types": [
+       {
+        "type": "folder"
+       }
+      ]
+     },
+     "viewer": {
+      "directly_related_user_types": [
+       {
+        "type": "user"
+       },
+       {
+        "type": "group",
+        "relation": "member"
+       }
+      ]
+     }
     }
    }
   },
   {
    "type": "document",
    "relations": {
-    "parent": {"this": {}},
+    "parent": {
+     "this": {}
+    },
     "owner": {
      "union": {
       "child": [
-       {"this": {}},
-       {"tupleToUserset": {"tupleset": {"relation": "parent"}, "computedUserset": {"relation": "owner"}}}
+       {
+        "this": {}
+       },
+       {
+        "tupleToUserset": {
+         "tupleset": {
+          "relation": "parent"
+         },
+         "computedUserset": {
+          "relation": "owner"
+         }
+        }
+       }
       ]
      }
     },
     "editor": {
      "union": {
       "child": [
-       {"this": {}},
-       {"computedUserset": {"relation": "owner"}}
+       {
+        "this": {}
+       },
+       {
+        "computedUserset": {
+         "relation": "owner"
+        }
+       }
       ]
      }
     },
     "viewer": {
      "union": {
       "child": [
-       {"this": {}},
-       {"computedUserset": {"relation": "editor"}},
-       {"tupleToUserset": {"tupleset": {"relation": "parent"}, "computedUserset": {"relation": "viewer"}}}
+       {
+        "this": {}
+       },
+       {
+        "computedUserset": {
+         "relation": "editor"
+        }
+       },
+       {
+        "tupleToUserset": {
+         "tupleset": {
+          "relation": "parent"
+         },
+         "computedUserset": {
+          "relation": "viewer"
+         }
+        }
+       }
       ]
      }
     },
     "can_share": {
      "intersection": {
       "child": [
-       {"this": {}},
-       {"computedUserset": {"relation": "viewer"}},
-       {"computedUserset": {"relation": "active_context"}}
+       {
+        "this": {}
+       },
+       {
+        "computedUserset": {
+         "relation": "viewer"
+        }
+       },
+       {
+        "computedUserset": {
+         "relation": "active_context"
+        }
+       }
       ]
      }
     },
-    "active_context": {"this": {}}
+    "active_context": {
+     "this": {}
+    },
+    "blocked": {
+     "this": {}
+    },
+    "can_view": {
+     "difference": {
+      "base": {
+       "computedUserset": {
+        "relation": "viewer"
+       }
+      },
+      "subtract": {
+       "computedUserset": {
+        "relation": "blocked"
+       }
+      }
+     }
+    }
    },
    "metadata": {
     "relations": {
-     "parent": {"directly_related_user_types": [{"type": "folder"}]},
-     "owner": {"directly_related_user_types": [{"type": "user"}]},
-     "editor": {"directly_related_user_types": [{"type": "user"}, {"type": "group", "relation": "member"}]},
-     "viewer": {"directly_related_user_types": [{"type": "user"}, {"type": "user", "wildcard": {}, "condition": "has_scope"}, {"type": "group", "relation": "member"}]},
-     "can_share": {"directly_related_user_types": [{"type": "user"}]},
-     "active_context": {"directly_related_user_types": [{"type": "user"}]}
+     "parent": {
+      "directly_related_user_types": [
+       {
+        "type": "folder"
+       }
+      ]
+     },
+     "owner": {
+      "directly_related_user_types": [
+       {
+        "type": "user"
+       }
+      ]
+     },
+     "editor": {
+      "directly_related_user_types": [
+       {
+        "type": "user"
+       },
+       {
+        "type": "group",
+        "relation": "member"
+       }
+      ]
+     },
+     "viewer": {
+      "directly_related_user_types": [
+       {
+        "type": "user"
+       },
+       {
+        "type": "user",
+        "wildcard": {},
+        "condition": "has_scope"
+       },
+       {
+        "type": "group",
+        "relation": "member"
+       }
+      ]
+     },
+     "can_share": {
+      "directly_related_user_types": [
+       {
+        "type": "user"
+       }
+      ]
+     },
+     "active_context": {
+      "directly_related_user_types": [
+       {
+        "type": "user"
+       }
+      ]
+     },
+     "blocked": {
+      "directly_related_user_types": [
+       {
+        "type": "user"
+       }
+      ]
+     },
+     "can_view": {}
     }
    }
   }
@@ -95,8 +264,17 @@
    "name": "has_scope",
    "expression": "required_scope in granted_scopes",
    "parameters": {
-    "granted_scopes": {"type_name": "TYPE_NAME_MAP", "generic_types": [{"type_name": "TYPE_NAME_STRING"}]},
-    "required_scope": {"type_name": "TYPE_NAME_STRING"}
+    "granted_scopes": {
+     "type_name": "TYPE_NAME_MAP",
+     "generic_types": [
+      {
+       "type_name": "TYPE_NAME_STRING"
+      }
+     ]
+    },
+    "required_scope": {
+     "type_name": "TYPE_NAME_STRING"
+    }
    }
   }
  }

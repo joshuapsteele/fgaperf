@@ -15,22 +15,29 @@ jobs:
           go-version-file: go.mod
       - run: go vet ./...
       - run: go build -o fgaperf .
-      - run: go test ./...
+      # The load path is concurrent; run the race detector so data races fail
+      # CI rather than surfacing as flaky numbers.
+      - run: go test -race ./...
 
   # End-to-end: run the full pipeline against a real OpenFGA server (in-memory
   # datastore is fine for functional validation) and verify that the automatic
-  # cleanup deleted the store it created.
+  # cleanup deleted the store it created. Matrixed across a pinned current
+  # version and `latest` so API drift fails CI early.
   integration:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        openfga: [v1.17.1, latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
       - run: go build -o fgaperf .
-      - name: Start OpenFGA
+      - name: Start OpenFGA ${{ matrix.openfga }}
         run: |
-          docker run -d --name openfga -p 8080:8080 openfga/openfga:v1.17.1 run
+          docker run -d --name openfga -p 8080:8080 openfga/openfga:${{ matrix.openfga }} run
           for i in $(seq 1 30); do
             curl -sf http://localhost:8080/healthz > /dev/null && exit 0
             sleep 1
@@ -38,11 +45,14 @@ jobs:
           echo "OpenFGA did not become healthy" >&2
           docker logs openfga >&2
           exit 1
-      - name: Run full pipeline against the example model
+      - name: Run full pipeline against the example model (check)
+        run: ./fgaperf all -config examples/config.yaml -warmup 2s -duration 8s
+      # Exercise the list endpoints too, so a regression in list-objects /
+      # list-users fails CI rather than surfacing only in production use.
+      - name: Run list-objects and list-users against the example model
         run: |
-          sed -e 's/warmup: 10s/warmup: 2s/' -e 's/duration: 60s/duration: 8s/' \
-            examples/config.yaml > ci-config.yaml
-          ./fgaperf all -config ci-config.yaml
+          ./fgaperf all -config examples/config.yaml -warmup 2s -duration 4s -endpoint list-objects
+          ./fgaperf all -config examples/config.yaml -warmup 2s -duration 4s -endpoint list-users
       - name: Verify automatic cleanup left no stores behind
         run: |
           count=$(curl -s http://localhost:8080/stores | jq '.stores | length')

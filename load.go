@@ -115,7 +115,7 @@ func runChurn(client *FGAClient, corpus *Corpus, cfg *Config, start, warmupEnd, 
 		}
 		completed := time.Now()
 		if completed.After(warmupEnd) {
-			s := Sample{Target: "churn-" + op, Latency: completed.Sub(t0), Completed: completed, Items: 1}
+			s := Sample{Target: "churn-" + op, Latency: completed.Sub(t0), Completed: completed, Items: 1, ResultCount: -1}
 			if err != nil {
 				s.Err = true
 				s.ErrClass = classifyErr(err)
@@ -231,6 +231,7 @@ type SampleRecord struct {
 	LatencyNs     int64  `json:"latency_ns"`
 	RespLatencyNs int64  `json:"resp_latency_ns,omitempty"`
 	Items         int    `json:"items"`
+	ResultCount   *int   `json:"result_count,omitempty"` // list endpoints only
 	Conditioned   bool   `json:"conditioned,omitempty"`
 	Contextual    bool   `json:"contextual,omitempty"`
 	Err           bool   `json:"err,omitempty"`
@@ -271,6 +272,10 @@ func newSampleWriter(path string, appendMode bool) (*sampleWriter, error) {
 }
 
 func (w *sampleWriter) write(s Sample, offeredRate int) {
+	var rc *int
+	if s.ResultCount >= 0 {
+		rc = &s.ResultCount
+	}
 	w.enc.Encode(&SampleRecord{
 		T:             s.Completed.UnixNano(),
 		Target:        s.Target,
@@ -278,6 +283,7 @@ func (w *sampleWriter) write(s Sample, offeredRate int) {
 		LatencyNs:     s.Latency.Nanoseconds(),
 		RespLatencyNs: s.RespLatency.Nanoseconds(),
 		Items:         s.Items,
+		ResultCount:   rc,
 		Conditioned:   s.Conditioned,
 		Contextual:    s.Contextual,
 		Err:           s.Err,
@@ -563,7 +569,7 @@ func doCheck(client *FGAClient, picker *corpusPicker, mism *mismatchRecorder, co
 		Consistency:          cfg.Load.Consistency,
 	})
 	completed := time.Now()
-	s := Sample{Target: e.Target, Conditioned: e.Conditioned, Contextual: e.Contextual, Latency: completed.Sub(t0), Completed: completed, Items: 1}
+	s := Sample{Target: e.Target, Conditioned: e.Conditioned, Contextual: e.Contextual, Latency: completed.Sub(t0), Completed: completed, Items: 1, ResultCount: -1}
 	if err != nil {
 		s.Err = true
 		s.ErrClass = classifyErr(err)
@@ -601,7 +607,7 @@ func doBatch(client *FGAClient, picker *corpusPicker, mism *mismatchRecorder, co
 		Consistency:          cfg.Load.Consistency,
 	})
 	completed := time.Now()
-	s := Sample{Target: "batch", Conditioned: conditioned, Contextual: contextual, Latency: completed.Sub(t0), Completed: completed, Items: n}
+	s := Sample{Target: "batch", Conditioned: conditioned, Contextual: contextual, Latency: completed.Sub(t0), Completed: completed, Items: n, ResultCount: -1}
 	if err != nil {
 		s.Err = true
 		s.ErrClass = classifyErr(err)
