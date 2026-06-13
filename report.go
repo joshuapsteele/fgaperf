@@ -217,17 +217,18 @@ func BuildSweepReport(results []*LoadResult, corpus *Corpus, cfg *Config, tupleC
 	steps := make([]SweepStep, 0, len(results))
 	kneeIdx := -1
 	for i, res := range results {
+		lst := res.loadStats()
 		st := SweepStep{
 			OfferedRate:     res.OfferedRate,
 			DroppedSlots:    res.DroppedSlots,
-			Overall:         Summarize(res.Samples),
-			ResponseLatency: SummarizeResponse(res.Samples),
+			Overall:         lst.overall.Stats(),
+			ResponseLatency: lst.response.Stats(),
 			Mismatches:      res.Mismatches,
 			Server:          res.Server,
 		}
 		window := res.MeasuredWindow.Seconds()
 		if window > 0 {
-			st.AchievedRate = float64(len(res.Samples)) / window
+			st.AchievedRate = float64(lst.TotalSamples()) / window
 			st.Throughput = float64(st.Overall.Items) / window
 		}
 		st.Saturated = st.AchievedRate < 0.98*float64(st.OfferedRate)
@@ -302,30 +303,14 @@ func BuildReport(res *LoadResult, corpus *Corpus, cfg *Config, tupleCount int, s
 		r.SeedDuration = seedDur.String()
 		r.SeedRate = float64(tupleCount) / seedDur.Seconds()
 	}
-	var cond, uncond, contextual, noContextual []Sample
-	byTarget := map[string][]Sample{}
-	items := 0
-	for _, s := range res.Samples {
-		items += s.Items
-		if s.Conditioned {
-			cond = append(cond, s)
-		} else {
-			uncond = append(uncond, s)
-		}
-		if s.Contextual {
-			contextual = append(contextual, s)
-		} else {
-			noContextual = append(noContextual, s)
-		}
-		byTarget[s.Target] = append(byTarget[s.Target], s)
-	}
-	r.Overall = Summarize(res.Samples)
-	r.Conditioned = Summarize(cond)
-	r.Unconditioned = Summarize(uncond)
-	r.Contextual = Summarize(contextual)
-	r.NoContextual = Summarize(noContextual)
-	for t, ss := range byTarget {
-		r.ByTarget[t] = Summarize(ss)
+	lst := res.loadStats()
+	r.Overall = lst.overall.Stats()
+	r.Conditioned = lst.conditioned.Stats()
+	r.Unconditioned = lst.unconditioned.Stats()
+	r.Contextual = lst.contextual.Stats()
+	r.NoContextual = lst.noContextual.Stats()
+	for t, ss := range lst.byTarget {
+		r.ByTarget[t] = ss.Stats()
 	}
 	// Throughput over the wall clock the samples actually spanned, not the
 	// configured duration: in-flight requests complete after the deadline and
@@ -335,13 +320,13 @@ func BuildReport(res *LoadResult, corpus *Corpus, cfg *Config, tupleCount int, s
 		window = res.Duration.Seconds()
 	}
 	if window > 0 {
-		r.Throughput = float64(items) / window
+		r.Throughput = float64(r.Overall.Items) / window
 	}
 	if res.OfferedRate > 0 {
 		if window > 0 {
-			r.AchievedRate = float64(len(res.Samples)) / window
+			r.AchievedRate = float64(lst.TotalSamples()) / window
 		}
-		rl := SummarizeResponse(res.Samples)
+		rl := lst.response.Stats()
 		r.ResponseLatency = &rl
 	}
 	if res.WriteRate > 0 {
@@ -349,8 +334,8 @@ func BuildReport(res *LoadResult, corpus *Corpus, cfg *Config, tupleCount int, s
 		ws := res.WriteStats
 		r.WriteChurn = &ws
 	}
-	r.ResultCounts = summarizeCounts(res.Samples)
-	r.Timeline = buildTimeline(res.Samples)
+	r.ResultCounts = lst.resultCounts.Stats()
+	r.Timeline = lst.timeline.Buckets()
 	return r
 }
 

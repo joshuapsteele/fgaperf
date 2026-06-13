@@ -200,14 +200,9 @@ func TestWarmupMismatchesExcludedFromMeasuredCounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var measuredMismatches int64
-	for _, s := range res.Samples {
-		if s.Mismatch {
-			measuredMismatches++
-		}
-	}
-	if res.Mismatches != measuredMismatches {
-		t.Fatalf("reported mismatches = %d, want measured-sample count %d", res.Mismatches, measuredMismatches)
+	measured := res.loadStats().overall.Stats().Count
+	if res.Mismatches != int64(measured) {
+		t.Fatalf("reported mismatches = %d, want measured-sample count %d", res.Mismatches, measured)
 	}
 }
 
@@ -401,5 +396,53 @@ func TestRunLoadOpensSampleFileBeforeWorkers(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	if got := calls.Load(); got != 0 {
 		t.Fatalf("workers started before sample_file open failed; saw %d requests", got)
+	}
+}
+
+func TestRunLoadAggregatesWithoutRetainingSamples(t *testing.T) {
+	client, srv := testClient(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]bool{"allowed": true})
+	})
+	defer srv.Close()
+
+	cfg, err := LoadConfigFile("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Load.Concurrency = 1
+	cfg.Load.Warmup = 0
+	cfg.Load.Duration = 30 * time.Millisecond
+	cfg.Load.SampleFile = filepath.Join(t.TempDir(), "samples.jsonl")
+	corpus := &Corpus{StoreID: "store", ModelID: "model", Entries: []CorpusEntry{
+		{User: "user:1", Relation: "viewer", Object: "doc:1", Target: "doc#viewer", Expected: true},
+	}}
+
+	res, err := RunLoad(client, corpus, cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Samples) != 0 {
+		t.Fatalf("RunLoad retained %d raw samples, want 0", len(res.Samples))
+	}
+	st := res.loadStats().overall.Stats()
+	if st.Count == 0 {
+		t.Fatal("aggregate stats recorded no successful samples")
+	}
+
+	f, err := os.Open(cfg.Load.SampleFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	lines := 0
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		lines++
+	}
+	if err := sc.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if lines != res.loadStats().TotalSamples() {
+		t.Fatalf("sample_file lines = %d, want aggregate sample count %d", lines, res.loadStats().TotalSamples())
 	}
 }

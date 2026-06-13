@@ -51,7 +51,7 @@ type LoadResult struct {
 	WallClock       time.Duration
 	MeasuredWindow  time.Duration // first to last measured-sample completion
 	DroppedSlots    int64         // fixed-rate measured-window slots dropped because workers fell a full buffer behind (warmup-phase drops excluded)
-	Samples         []Sample
+	Samples         []Sample      // compatibility fallback for tests/manual results; RunLoad keeps measured samples in stats instead
 	TotalErrors     int64
 	TotalChecks     int64
 	Mismatches      int64
@@ -61,26 +61,28 @@ type LoadResult struct {
 	MismatchRecords []MismatchRecord
 	WriteRate       int   // configured background churn writes/sec; 0 = none
 	WriteStats      Stats // latency of measured-phase churn writes/deletes
+
+	stats *loadStats
 }
 
 // runChurn issues background tuple writes (and deletes of its own earlier
 // writes) at writeRate until deadline, instantiating churn templates with
-// fresh nonce-scoped instance IDs. It returns latency samples from the
-// measured phase. A dedicated goroutine, not the check workers: write
-// latency must not occupy check-worker slots.
-func runChurn(client *FGAClient, corpus *Corpus, cfg *Config, start, warmupEnd, deadline time.Time) []Sample {
+// fresh nonce-scoped instance IDs. It returns latency stats from the measured
+// phase. A dedicated goroutine, not the check workers: write latency must not
+// occupy check-worker slots.
+func runChurn(client *FGAClient, corpus *Corpus, cfg *Config, start, warmupEnd, deadline time.Time) Stats {
 	templates := corpus.ChurnTemplates
 	rng := rand.New(rand.NewSource(cfg.RandomSeed + 999983))
 	nonce := time.Now().UnixNano() % 1_000_000 // distinct IDs across runs against the same store
 	interval := time.Second / time.Duration(cfg.Load.WriteRate)
-	var samples []Sample
+	var stats latencyStats
 	var outstanding []TupleKey
 	var timer *time.Timer
 	seq := 0
 	for n := int64(0); ; n++ {
 		intended := start.Add(time.Duration(n) * interval)
 		if !intended.Before(deadline) {
-			return samples
+			return stats.Stats()
 		}
 		if d := time.Until(intended); d > 0 {
 			if timer == nil {
@@ -125,7 +127,7 @@ func runChurn(client *FGAClient, corpus *Corpus, cfg *Config, start, warmupEnd, 
 				s.ErrClass = classifyErr(err)
 				s.ErrMsg = err.Error()
 			}
-			samples = append(samples, s)
+			stats.AddSample(s, s.Latency)
 		}
 	}
 }
@@ -381,6 +383,7 @@ func RunLoad(client *FGAClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 		OfferedRate: lc.Rate,
 		Warmup:      lc.Warmup,
 		Duration:    lc.Duration,
+		stats:       newLoadStats(),
 	}
 	var sw *sampleWriter
 	if lc.SampleFile != "" {
@@ -464,14 +467,14 @@ func RunLoad(client *FGAClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 		}()
 	}
 
-	var churnSamples []Sample
+	var churnStats Stats
 	churnDone := make(chan struct{})
 	if lc.WriteRate > 0 && len(corpus.ChurnTemplates) == 0 {
 		fmt.Fprintln(os.Stderr, "load: write_rate is set but the corpus has no churn templates (no relation accepts a plain unconditioned user type); churn disabled")
 	}
 	if lc.WriteRate > 0 && len(corpus.ChurnTemplates) > 0 {
 		go func() {
-			churnSamples = runChurn(client, corpus, cfg, start, warmupEnd, deadline)
+			churnStats = runChurn(client, corpus, cfg, start, warmupEnd, deadline)
 			close(churnDone)
 		}()
 	} else {
@@ -578,7 +581,7 @@ func RunLoad(client *FGAClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 				}
 			}
 		}
-		res.Samples = append(res.Samples, s)
+		res.stats.AddSample(s)
 	}
 	close(stopProgress)
 	<-progressDone
@@ -591,9 +594,9 @@ func RunLoad(client *FGAClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 	}
 	<-done
 	<-churnDone // before the after-snapshot so churn writes land inside the server-side diff
-	if len(churnSamples) > 0 {
+	if churnStats.Count+churnStats.Errors > 0 {
 		res.WriteRate = lc.WriteRate
-		res.WriteStats = Summarize(churnSamples)
+		res.WriteStats = churnStats
 	}
 	if scraper != nil {
 		if after, err := scraper.Snapshot(); err != nil {
@@ -638,10 +641,11 @@ func RunSweep(client *FGAClient, corpus *Corpus, cfg *Config, scraper *MetricsSc
 		if err != nil {
 			return nil, fmt.Errorf("sweep step %d (rate %d): %w", i+1, rate, err)
 		}
-		st := Summarize(res.Samples)
+		lst := res.loadStats()
+		st := lst.overall.Stats()
 		achieved := 0.0
 		if res.MeasuredWindow > 0 {
-			achieved = float64(len(res.Samples)) / res.MeasuredWindow.Seconds()
+			achieved = float64(lst.TotalSamples()) / res.MeasuredWindow.Seconds()
 		}
 		fmt.Printf("  achieved %.0f req/s | p50 %s p99 %s | errors %d | %d slots dropped\n",
 			achieved, ms(st.P50), ms(st.P99), st.Errors, res.DroppedSlots)
@@ -859,37 +863,19 @@ func SummarizeResponse(samples []Sample) Stats {
 }
 
 func summarizeBy(samples []Sample, latency func(Sample) time.Duration) Stats {
-	st := Stats{}
-	if len(samples) == 0 {
-		return st
-	}
-	lats := make([]time.Duration, 0, len(samples))
-	var sum time.Duration
+	var acc latencyStats
 	for _, s := range samples {
-		st.Items += s.Items
-		if s.Err {
-			st.Errors++
-			continue
-		}
-		l := latency(s)
-		lats = append(lats, l)
-		sum += l
+		acc.AddSample(s, latency(s))
 	}
-	st.Count = len(lats)
-	if st.Count == 0 {
-		return st
+	return acc.Stats()
+}
+
+func (r *LoadResult) loadStats() *loadStats {
+	if r == nil {
+		return newLoadStats()
 	}
-	sort.Slice(lats, func(i, j int) bool { return lats[i] < lats[j] })
-	pct := func(p float64) time.Duration {
-		idx := int(p*float64(len(lats))) - 1
-		if idx < 0 {
-			idx = 0
-		}
-		return lats[idx]
+	if r.stats != nil {
+		return r.stats
 	}
-	st.Min = lats[0]
-	st.Max = lats[len(lats)-1]
-	st.Mean = sum / time.Duration(st.Count)
-	st.P50, st.P90, st.P95, st.P99 = pct(0.50), pct(0.90), pct(0.95), pct(0.99)
-	return st
+	return loadStatsFromSamples(r.Samples)
 }

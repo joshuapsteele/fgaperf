@@ -62,6 +62,14 @@ first.
 
 ### 1. Streaming latency aggregation (bounded-memory percentiles)
 
+Status: **Complete** (2026-06-13) — added a mergeable three-significant-digit
+latency digest, streaming load/report aggregates, digest-backed progress
+snapshots, bounded timeline/count aggregators, and tests covering digest
+tolerance plus `sample_file` streaming without raw in-memory retention.
+Verification: `go vet ./...`; `go test -count=1 ./...`; short OpenFGA smoke
+against the local compose stack with `examples/config.yaml`, `-warmup 1s`,
+`-duration 2s`, `-rate 50`, and `/tmp/fgaperf-smoke-results`.
+
 Motivation: today every measured `Sample` is retained in a slice and
 percentiles are computed by sorting it (`summarizeBy`). At high throughput a
 short run accumulates millions of samples — hundreds of MB resident — and the

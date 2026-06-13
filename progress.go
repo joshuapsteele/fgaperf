@@ -114,7 +114,7 @@ type loadProgress struct {
 	mu      sync.Mutex
 	items   int
 	errors  int
-	samples []Sample
+	latency latencyStats
 }
 
 func newLoadProgress(start, warmupEnd, deadline time.Time) *loadProgress {
@@ -134,7 +134,7 @@ func (p *loadProgress) add(s Sample) {
 	if s.Err {
 		p.errors++
 	}
-	p.samples = append(p.samples, s)
+	p.latency.AddSample(s, s.Latency)
 }
 
 func (p *loadProgress) run(stop <-chan struct{}, done chan<- struct{}) {
@@ -160,13 +160,12 @@ func (p *loadProgress) run(stop <-chan struct{}, done chan<- struct{}) {
 			total := p.deadline.Sub(p.warmupEnd)
 			p.mu.Lock()
 			items, errors := p.items, p.errors
-			samples := append([]Sample(nil), p.samples...)
+			st := p.latency.Stats()
 			p.mu.Unlock()
 			rate := 0.0
 			if elapsed > 0 {
 				rate = float64(items) / elapsed.Seconds()
 			}
-			st := Summarize(samples)
 			fmt.Fprintf(os.Stderr, "\rload: t+%s of %s | %.0f req/s | p99 %sms | %d errors",
 				fmtETA(elapsed), fmtETA(total), rate, ms(st.P99), errors)
 		}
