@@ -479,12 +479,24 @@ should appear in the listing when expected=true and consistency allows).
 **Files:** `client.go`, `load.go`, `config.go` (`load.endpoint` enum),
 `report.go`.
 
-### 15. CLI flag overrides for common knobs
+### 15. CLI flag overrides for common knobs ✅
 
 The README currently recommends `sed` for a quick smoke run. Add flags that
 override config after load: `-duration`, `-warmup`, `-rate`, `-concurrency`,
 `-endpoint`, `-consistency`, `-output-dir`. Record overrides in the resolved
 config snapshot (item 9). **Files:** `main.go`, `config.go`.
+
+**Done (2026-06-13).** The shared flag block in `main.go` gained `-duration`,
+`-warmup`, `-rate`, `-concurrency`, `-endpoint`, `-consistency`, and
+`-output-dir`. Only flags actually passed (detected via `fs.Visit`) override
+the loaded config; `Config.applyOverrides` applies them and re-runs `validate`,
+so a bad override (`-consistency EVENTUAL`) fails fast. Because overrides mutate
+`cfg` before `Resolved()` is marshaled, they appear in the results JSON's
+`resolved_config` — a run stays reproducible from its output alone. The README's
+`sed` smoke-test recipe is replaced with `-warmup 2s -duration 8s`. Verified
+end-to-end: `all -warmup 2s -duration 5s -concurrency 8` reflected all three in
+the load line and the resolved config. Unit test `TestApplyOverrides` covers
+apply/no-op/bad-override.
 
 ### 16. Latency timeline in the report
 

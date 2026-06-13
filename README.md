@@ -66,12 +66,21 @@ results/results-<stamp>.json
 results/findings-<stamp>.md
 ```
 
-For a shorter smoke test, override the run duration:
+For a shorter smoke test, override the run duration on the command line — no
+config edit needed:
 
 ```bash
-sed -e 's/warmup: 10s/warmup: 2s/' -e 's/duration: 60s/duration: 8s/' \
-  examples/config.yaml > /tmp/fgaperf-smoke.yaml
-./fgaperf all -config /tmp/fgaperf-smoke.yaml
+./fgaperf all -config examples/config.yaml -warmup 2s -duration 8s
+```
+
+The common load knobs are available as flags that override the config after it
+loads: `-duration`, `-warmup`, `-rate`, `-concurrency`, `-endpoint`,
+`-consistency`, and `-output-dir`. Overrides are recorded in the results JSON's
+`resolved_config`, so a run stays reproducible from its output alone. For
+example, sweep a single rate point against the example store:
+
+```bash
+./fgaperf run -config examples/config.yaml -rate 2000 -duration 30s
 ```
 
 ## Commands

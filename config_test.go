@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // An absent config file must still produce a fully working configuration;
@@ -156,6 +157,43 @@ func TestTargetSpecYAMLForms(t *testing.T) {
 	want := []TargetSpec{{Relation: "document#viewer", Weight: 1}, {Relation: "document#editor", Weight: 8}}
 	if len(cfg.Probe.Targets) != 2 || cfg.Probe.Targets[0] != want[0] || cfg.Probe.Targets[1] != want[1] {
 		t.Errorf("targets = %+v, want %+v", cfg.Probe.Targets, want)
+	}
+}
+
+// CLI flag overrides replace the matching config value, leave everything else
+// alone, and re-validate (so a bad override fails fast).
+func TestApplyOverrides(t *testing.T) {
+	cfg, err := LoadConfigFile("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dur := 5 * time.Second
+	rate := 1234
+	endpoint := "batch-check"
+	out := "/tmp/elsewhere"
+	if err := cfg.applyOverrides(Overrides{Duration: &dur, Rate: &rate, Endpoint: &endpoint, OutputDir: &out}); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Load.Duration != dur || cfg.Load.Rate != rate || cfg.Load.Endpoint != endpoint || cfg.OutputDir != out {
+		t.Errorf("overrides not applied: %+v", cfg.Load)
+	}
+	if cfg.Load.Warmup == 0 || cfg.Load.Consistency == "" {
+		t.Errorf("untouched fields lost their defaults: warmup=%v consistency=%q", cfg.Load.Warmup, cfg.Load.Consistency)
+	}
+
+	// An empty Overrides is a no-op.
+	beforeRate, beforeDur := cfg.Load.Rate, cfg.Load.Duration
+	if err := cfg.applyOverrides(Overrides{}); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Load.Rate != beforeRate || cfg.Load.Duration != beforeDur {
+		t.Errorf("empty overrides changed config: rate %d->%d dur %v->%v", beforeRate, cfg.Load.Rate, beforeDur, cfg.Load.Duration)
+	}
+
+	// A bad override must fail validation.
+	bad := "EVENTUAL"
+	if err := cfg.applyOverrides(Overrides{Consistency: &bad}); err == nil {
+		t.Error("invalid consistency override accepted")
 	}
 }
 

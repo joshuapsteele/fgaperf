@@ -48,6 +48,16 @@ func main() {
 	cfgPath := fs.String("config", "config.yaml", "path to config file (optional; defaults apply)")
 	keep := fs.Bool("keep", false, "all: keep the store and state file instead of deleting them")
 	allStores := fs.Bool("all-stores", false, "cleanup: delete every store whose name matches openfga.store_name")
+	// Common load knobs as flags so a quick run doesn't need a config edit (or
+	// the sed dance the README used to recommend). Only flags actually passed
+	// override the config; defaults here are inert sentinels.
+	durFlag := fs.Duration("duration", 0, "override load.duration")
+	warmupFlag := fs.Duration("warmup", 0, "override load.warmup")
+	rateFlag := fs.Int("rate", 0, "override load.rate (req/s; 0 = closed loop)")
+	concFlag := fs.Int("concurrency", 0, "override load.concurrency")
+	endpointFlag := fs.String("endpoint", "", "override load.endpoint (check|batch-check)")
+	consistencyFlag := fs.String("consistency", "", "override load.consistency (MINIMIZE_LATENCY|HIGHER_CONSISTENCY)")
+	outDirFlag := fs.String("output-dir", "", "override output_dir")
 	fs.Parse(os.Args[2:])
 
 	cfgFile := *cfgPath
@@ -57,6 +67,29 @@ func main() {
 	}
 	cfg, err := LoadConfigFile(cfgFile)
 	check(err)
+
+	var ov Overrides
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "duration":
+			ov.Duration = durFlag
+		case "warmup":
+			ov.Warmup = warmupFlag
+		case "rate":
+			ov.Rate = rateFlag
+		case "concurrency":
+			ov.Concurrency = concFlag
+		case "endpoint":
+			ov.Endpoint = endpointFlag
+		case "consistency":
+			ov.Consistency = consistencyFlag
+		case "output-dir":
+			ov.OutputDir = outDirFlag
+		}
+	})
+	if err := cfg.applyOverrides(ov); err != nil {
+		fail("invalid flag override: %v", err)
+	}
 
 	// run and cleanup operate on an existing store and never read the model.
 	var analysis *Analysis

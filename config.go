@@ -494,6 +494,47 @@ func (c *Config) applyDefaults() {
 	}
 }
 
+// Overrides carries CLI flag values that override config after load. A nil
+// field means the flag was not passed; only explicitly set flags are applied,
+// so a missing flag never clobbers a configured value with a zero.
+type Overrides struct {
+	Duration    *time.Duration
+	Warmup      *time.Duration
+	Rate        *int
+	Concurrency *int
+	Endpoint    *string
+	Consistency *string
+	OutputDir   *string
+}
+
+// applyOverrides applies CLI flag overrides on top of the loaded config and
+// re-validates. Overrides mutate cfg before Resolved() is marshaled, so they
+// are recorded in the results snapshot like any other knob.
+func (c *Config) applyOverrides(o Overrides) error {
+	if o.Duration != nil {
+		c.Load.Duration = *o.Duration
+	}
+	if o.Warmup != nil {
+		c.Load.Warmup = *o.Warmup
+	}
+	if o.Rate != nil {
+		c.Load.Rate = *o.Rate
+	}
+	if o.Concurrency != nil {
+		c.Load.Concurrency = *o.Concurrency
+	}
+	if o.Endpoint != nil {
+		c.Load.Endpoint = *o.Endpoint
+	}
+	if o.Consistency != nil {
+		c.Load.Consistency = *o.Consistency
+	}
+	if o.OutputDir != nil {
+		c.OutputDir = *o.OutputDir
+	}
+	return c.validate()
+}
+
 // Resolved returns the post-defaults config as a generic map (yaml key names
 // preserved) for embedding in results JSON, with credentials redacted.
 // Results files outlive memory of how they were produced; this plus the
