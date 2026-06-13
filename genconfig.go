@@ -622,4 +622,3 @@ func splitConditionParams(c Condition) (tupleSide, requestSide []string) {
 func poolNameFor(condition, param string) string {
 	return condition + "_" + param
 }
-

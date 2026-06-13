@@ -1,9 +1,15 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func exampleWorld(t *testing.T) (*World, []TupleKey) {
@@ -205,5 +211,112 @@ func TestDefaultConfigIgnoresShapingKnobs(t *testing.T) {
 	second := NewWorld(a, knobbed).GenerateTuples()
 	if !reflect.DeepEqual(first, second) {
 		t.Fatal("no-op shaping knobs changed the generated tuple graph")
+	}
+}
+
+// SeedStore must resume an interrupted seed without writing any tuple twice and
+// without losing any: it skips the clean prefix it checkpointed, re-sends the
+// post-hole batches, and tolerates the "already exists" rejection on the ones
+// that had committed before the interruption. Modeled on OpenFGA's
+// transactional, all-or-nothing batch writes.
+func TestSeedStoreResume(t *testing.T) {
+	const n = 25
+	tuples := make([]TupleKey, n)
+	for i := range tuples {
+		tuples[i] = TupleKey{User: fmt.Sprintf("user:%d", i), Relation: "viewer", Object: "document:1"}
+	}
+
+	var mu sync.Mutex
+	committed := map[string]int{} // user -> times written; >1 means a tuple was written twice
+	failUser := "user:15"         // first run: fail the batch containing this user
+
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Writes struct {
+				TupleKeys []TupleKey `json:"tuple_keys"`
+			} `json:"writes"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		batch := body.Writes.TupleKeys
+		mu.Lock()
+		defer mu.Unlock()
+		// Transactional: if any tuple in the batch already exists, reject the
+		// whole batch as a duplicate.
+		for _, tk := range batch {
+			if committed[tk.User] > 0 {
+				w.WriteHeader(http.StatusBadRequest)
+				fmt.Fprint(w, `{"code":"validation_error","message":"cannot write a tuple which already exists"}`)
+				return
+			}
+		}
+		for _, tk := range batch {
+			if tk.User == failUser {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+		}
+		for _, tk := range batch {
+			committed[tk.User]++
+		}
+	}
+	srv := httptest.NewServer(http.HandlerFunc(handler))
+	defer srv.Close()
+	client := NewFGAClient(OpenFGAConfig{APIURL: srv.URL, Timeout: 5 * time.Second}, 4)
+
+	cfg, _ := LoadConfigFile("")
+	cfg.Seed.BatchSize = 10 // batches: [0-9], [10-19] (contains user:15), [20-24]
+	cfg.Seed.Writers = 3
+
+	var checkpoint int
+	_, err := SeedStore(client, "s", "m", tuples, cfg, 0, false, func(w int) { checkpoint = w })
+	if err == nil {
+		t.Fatal("first run should fail (batch with user:15 errors)")
+	}
+	if checkpoint != 10 {
+		t.Fatalf("checkpoint = %d, want 10 (clean prefix before the failed batch)", checkpoint)
+	}
+
+	// Resume: the failed batch now succeeds; the post-hole batch that committed
+	// in run 1 must be tolerated, not double-written.
+	failUser = ""
+	var checkpoint2 int
+	_, err = SeedStore(client, "s", "m", tuples, cfg, checkpoint, true, func(w int) { checkpoint2 = w })
+	if err != nil {
+		t.Fatalf("resume should succeed, got %v", err)
+	}
+	if checkpoint2 != n {
+		t.Fatalf("resume checkpoint = %d, want %d", checkpoint2, n)
+	}
+	if len(committed) != n {
+		t.Fatalf("committed %d distinct tuples, want %d", len(committed), n)
+	}
+	for u, c := range committed {
+		if c != 1 {
+			t.Errorf("tuple %s written %d times, want exactly 1", u, c)
+		}
+	}
+}
+
+// The batch watermark must only advance over a contiguous-from-zero run of
+// completed batches, so the checkpoint it yields is always a clean tuple
+// prefix that a resume can safely skip. A hole halts it.
+func TestBatchWatermark(t *testing.T) {
+	wm := &batchWatermark{seen: make([]bool, 4), sizes: []int{10, 10, 10, 5}}
+
+	wm.complete(1) // batch 0 still missing -> no advance
+	if wm.prefix != 0 {
+		t.Fatalf("prefix advanced past a hole: %d", wm.prefix)
+	}
+	wm.complete(0) // now 0 and 1 are contiguous
+	if wm.prefix != 20 {
+		t.Fatalf("prefix = %d, want 20", wm.prefix)
+	}
+	wm.complete(2)
+	if wm.prefix != 30 {
+		t.Fatalf("prefix = %d, want 30", wm.prefix)
+	}
+	// batch 3 never completes (a failed write): the watermark must stay put.
+	if wm.contig != 3 {
+		t.Fatalf("contig = %d, want 3 (batch 3 incomplete)", wm.contig)
 	}
 }

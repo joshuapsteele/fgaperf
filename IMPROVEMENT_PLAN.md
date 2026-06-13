@@ -576,7 +576,7 @@ client-credentials. Token fetch + refresh outside the hot path (background
 refresh well before expiry so no request ever pays the token cost).
 **Files:** `client.go`, `config.go`.
 
-### 20. Seeding at scale
+### 20. Seeding at scale ✅
 
 For datasets in the millions of tuples: progress/ETA output during seeding
 (currently silent until done), resumable seeding (record high-water mark in
@@ -585,6 +585,34 @@ counts per relation from config alone — no server — so users can sanity-chec
 graph size before a long seed. Document (rather than build) the
 seed-once-then-`pg_dump`/restore workflow for repeated large-scale runs.
 **Files:** `seed.go`, `main.go`, README.
+
+**Done (2026-06-13).** All four parts:
+- **Progress/ETA.** `SeedStore` reports `seeded N/M tuples (…%, … tuples/sec,
+  ETA …)` every 2s from a background goroutine, gated on `isTerminal(stderr)`
+  (new `progress.go` with the TTY check and `fmtETA`) so CI logs stay clean.
+- **Resumable seeding.** `setup` writes a partial state file (store/model IDs,
+  `seed_complete: false`) before seeding and checkpoints a high-water mark as it
+  goes. `setup -resume` reuses the store, skips the written prefix, and
+  continues. Correctness rests on a `batchWatermark` that only advances over a
+  contiguous-from-zero run of completed batches, so the checkpoint is always a
+  clean tuple prefix (a failed batch halts it). Because batches are atomic and
+  generation is deterministic, batches re-sent past the prefix that had already
+  committed are detected via `isDuplicateWriteErr` ("already exists") and
+  tolerated — no tuple is written twice, none is lost. `TestSeedStoreResume`
+  (httptest server modeling OpenFGA's transactional duplicate rejection) and
+  `TestBatchWatermark` cover this; `-race -count=3` clean.
+- **`fgaperf plan`.** New `plan.go` / subcommand: server-free, prints per-type
+  instance counts and an upper-bound per-relation tuple estimate
+  (`planTupleCounts` mirrors `GenerateTuples`' fanout logic) plus the probe
+  budget. Verified: its 2875 estimate brackets the actual 2780 seeded for the
+  example model. `TestPlanTupleCounts` covers the estimate and contextual
+  exclusion.
+- **pg_dump workflow** documented in a new README "Seeding at scale" section,
+  alongside `plan`, the progress line, and `-resume`.
+
+SeedStore was rewritten from a simple fan-out to a job/result pipeline to track
+the watermark; the happy path is unchanged and the full `all` pipeline verified
+end-to-end (zero errors/mismatches).
 
 ### 21. CI hardening ✅
 

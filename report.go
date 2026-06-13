@@ -42,7 +42,7 @@ type Report struct {
 	ByTarget        map[string]Stats `json:"by_target"`
 	ErrorsByClass   map[string]int64 `json:"errors_by_class,omitempty"`
 	ErrorSamples    []string         `json:"error_samples,omitempty"`
-	Server          *ServerMetrics   `json:"server,omitempty"` // diffed Prometheus view of the measured phase
+	Server          *ServerMetrics   `json:"server,omitempty"`     // diffed Prometheus view of the measured phase
 	WriteRate       int              `json:"write_rate,omitempty"` // background churn writes/sec; 0 = none
 	WriteChurn      *Stats           `json:"write_churn,omitempty"`
 	ResultCounts    *CountStats      `json:"result_counts,omitempty"` // list-objects/list-users: distribution of returned-set sizes

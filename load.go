@@ -38,20 +38,20 @@ type Sample struct {
 }
 
 type LoadResult struct {
-	Endpoint       string
-	Consistency    string
-	Concurrency    int
-	OfferedRate    int
-	Warmup         time.Duration
-	Duration       time.Duration
-	WallClock      time.Duration
-	MeasuredWindow time.Duration // first to last measured-sample completion
-	DroppedSlots   int64         // fixed-rate slots dropped because workers fell a full buffer behind
-	Samples        []Sample
-	TotalErrors    int64
-	TotalChecks    int64
-	Mismatches     int64
-	ErrorsByClass  map[string]int64
+	Endpoint        string
+	Consistency     string
+	Concurrency     int
+	OfferedRate     int
+	Warmup          time.Duration
+	Duration        time.Duration
+	WallClock       time.Duration
+	MeasuredWindow  time.Duration // first to last measured-sample completion
+	DroppedSlots    int64         // fixed-rate slots dropped because workers fell a full buffer behind
+	Samples         []Sample
+	TotalErrors     int64
+	TotalChecks     int64
+	Mismatches      int64
+	ErrorsByClass   map[string]int64
 	ErrorSamples    []string       // first few verbatim error strings from the measured phase
 	Server          *ServerMetrics // diffed Prometheus view of the measured phase; nil when not scraped
 	MismatchRecords []MismatchRecord

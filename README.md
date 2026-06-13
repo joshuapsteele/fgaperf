@@ -87,6 +87,7 @@ example, sweep a single rate point against the example store:
 
 ```bash
 ./fgaperf inspect -config examples/config.yaml   # print model analysis, no server needed
+./fgaperf plan    -config examples/config.yaml   # preview seeded tuple counts, no server needed
 ./fgaperf setup   -config examples/config.yaml   # create store, write model, seed tuples
 ./fgaperf probe   -config examples/config.yaml   # build corpus.json
 ./fgaperf run     -config examples/config.yaml   # run load, write results/
@@ -109,6 +110,40 @@ store at the end.
 tables the latency and server-side deltas, names every config key that
 differed between the runs, and calls out anything that makes the comparison
 apples-to-oranges (different endpoint, corpus size, duration, or concurrency).
+
+### Seeding at scale
+
+For datasets in the millions of tuples, seeding is the slow part of a run.
+
+- **Preview before you commit.** `fgaperf plan` loads the model and config,
+  applies defaults, validates everything, and prints per-type instance counts
+  and an (upper-bound) per-relation tuple estimate — no server contacted. Use
+  it to size the graph and iterate on `seed.fanout` / `seed.instances` /
+  `seed.cohorts` without waiting on a seed.
+- **Watch progress.** `setup` prints a live `seeded N/M tuples (…%, … tuples/sec,
+  ETA …)` line to the terminal (suppressed when stderr is not a TTY, so CI logs
+  stay clean).
+- **Resume an interrupted seed.** `setup` records a high-water mark in the state
+  file as it writes. If a long seed is interrupted (Ctrl-C, a crash, a dropped
+  connection), rerun `fgaperf setup -resume`: it reuses the same store, skips
+  the tuples already written, and continues. Because generation is
+  deterministic, the resumed seed is identical to an uninterrupted one. (Resume
+  requires the same config; changing the seed shape invalidates the checkpoint.)
+- **Seed once, restore many times.** When you want to run load repeatedly
+  against the same large graph, seed it once and snapshot the datastore instead
+  of re-seeding. With the bundled Postgres stack:
+
+  ```bash
+  ./fgaperf setup -config config.yaml -keep        # seed once, keep the store
+  docker compose exec -T postgres pg_dump -U postgres openfga > openfga-seeded.sql
+  # later, restore the snapshot instead of re-seeding:
+  docker compose exec -T postgres psql -U postgres -c 'DROP DATABASE openfga; CREATE DATABASE openfga;'
+  docker compose exec -T postgres psql -U postgres openfga < openfga-seeded.sql
+  ./fgaperf probe -config config.yaml && ./fgaperf run -config config.yaml
+  ```
+
+  Keep the `.fgaperf-state.json` from the seeding run alongside the dump — it
+  records the store and model IDs `probe`/`run` need.
 
 ## Using Your Own Model
 

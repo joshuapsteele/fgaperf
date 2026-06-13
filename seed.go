@@ -9,11 +9,14 @@ package main
 // a controllable rate.
 
 import (
+	"errors"
 	"fmt"
 	"math/rand"
+	"os"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -357,36 +360,162 @@ func (w *World) genValueWith(rng *rand.Rand, condName, param string, t ParamType
 	}
 }
 
-// SeedStore writes tuples with parallel workers and returns write throughput.
-func SeedStore(client *FGAClient, storeID, modelID string, tuples []TupleKey, cfg *Config) (time.Duration, error) {
-	batches := make(chan []TupleKey, cfg.Seed.Writers*2)
+// batchWatermark tracks the contiguous-from-zero prefix of completed batches.
+// Because batch j covers a fixed tuple range, the prefix is always a clean
+// tuple prefix — exactly what a resume can skip safely, since generation is
+// deterministic. A failed batch leaves a hole that halts the watermark, so the
+// checkpoint never claims tuples after the first failure.
+type batchWatermark struct {
+	seen   []bool
+	sizes  []int
+	contig int
+	prefix int // tuples in the contiguous prefix of completed batches
+}
+
+func (w *batchWatermark) complete(idx int) {
+	w.seen[idx] = true
+	for w.contig < len(w.seen) && w.seen[w.contig] {
+		w.prefix += w.sizes[w.contig]
+		w.contig++
+	}
+}
+
+// isDuplicateWriteErr reports whether err is OpenFGA rejecting a write because
+// the tuple already exists. On resume this is expected: batches after the last
+// clean-prefix batch may have committed before the interruption, and since each
+// batch is one atomic transaction aligned identically across runs (generation
+// is deterministic), an "already exists" rejection means the whole batch was
+// already written and can be skipped.
+func isDuplicateWriteErr(err error) bool {
+	var he *HTTPError
+	if errors.As(err, &he) {
+		return strings.Contains(strings.ToLower(he.Body), "already exists")
+	}
+	return false
+}
+
+// SeedStore writes tuples[startIndex:] with parallel workers and returns write
+// throughput. When checkpoint is non-nil it is called (throttled) with the
+// absolute count of tuples in the clean contiguous prefix written so far, so
+// `setup` can record a high-water mark for resume. startIndex is 0 for a fresh
+// seed; on resume it skips the already-written prefix and (tolerateDup) treats
+// already-committed batches past the prefix as done rather than erroring.
+func SeedStore(client *FGAClient, storeID, modelID string, tuples []TupleKey, cfg *Config, startIndex int, tolerateDup bool, checkpoint func(written int)) (time.Duration, error) {
+	start := time.Now()
+	remaining := tuples[startIndex:]
+
+	type job struct {
+		idx int
+		t   []TupleKey
+	}
+	type result struct {
+		idx int
+		n   int
+		ok  bool
+	}
+	var sizes []int
+	for i := 0; i < len(remaining); i += cfg.Seed.BatchSize {
+		end := i + cfg.Seed.BatchSize
+		if end > len(remaining) {
+			end = len(remaining)
+		}
+		sizes = append(sizes, end-i)
+	}
+
+	jobs := make(chan job, cfg.Seed.Writers*2)
+	results := make(chan result, cfg.Seed.Writers*2)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var firstErr error
-	start := time.Now()
 	for i := 0; i < cfg.Seed.Writers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for batch := range batches {
-				if err := client.WriteTuples(storeID, modelID, batch); err != nil {
+			for j := range jobs {
+				err := client.WriteTuples(storeID, modelID, j.t)
+				if err != nil && tolerateDup && isDuplicateWriteErr(err) {
+					err = nil // batch already committed before the interruption
+				}
+				if err != nil {
 					mu.Lock()
 					if firstErr == nil {
 						firstErr = err
 					}
 					mu.Unlock()
 				}
+				results <- result{idx: j.idx, n: len(j.t), ok: err == nil}
 			}
 		}()
 	}
-	for i := 0; i < len(tuples); i += cfg.Seed.BatchSize {
-		end := i + cfg.Seed.BatchSize
-		if end > len(tuples) {
-			end = len(tuples)
-		}
-		batches <- tuples[i:end]
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	// Collector: single goroutine owns the watermark and the progress counter.
+	var written int64 // total successfully written (for the progress %)
+	stopProgress := make(chan struct{})
+	progressDone := make(chan struct{})
+	if isTerminal(os.Stderr) && len(tuples) > 0 {
+		go seedProgress(&written, int64(len(tuples)), int64(startIndex), start, stopProgress, progressDone)
+	} else {
+		close(progressDone)
 	}
-	close(batches)
-	wg.Wait()
+
+	go func() {
+		off := 0
+		for i, sz := range sizes {
+			jobs <- job{idx: i, t: remaining[off : off+sz]}
+			off += sz
+		}
+		close(jobs)
+	}()
+
+	wm := &batchWatermark{seen: make([]bool, len(sizes)), sizes: sizes}
+	var lastCheckpoint time.Time
+	for r := range results {
+		if !r.ok {
+			continue // hole: watermark halts here so the checkpoint stays a clean prefix
+		}
+		atomic.AddInt64(&written, int64(r.n))
+		wm.complete(r.idx)
+		if checkpoint != nil && time.Since(lastCheckpoint) > 2*time.Second {
+			checkpoint(startIndex + wm.prefix)
+			lastCheckpoint = time.Now()
+		}
+	}
+	if checkpoint != nil {
+		checkpoint(startIndex + wm.prefix)
+	}
+	close(stopProgress)
+	<-progressDone
 	return time.Since(start), firstErr
+}
+
+// seedProgress prints a throttled one-line progress indicator (overwriting via
+// carriage return) until stop is closed, then clears the line.
+func seedProgress(written *int64, total, startIndex int64, start time.Time, stop <-chan struct{}, done chan<- struct{}) {
+	defer close(done)
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			fmt.Fprintf(os.Stderr, "\r%-72s\r", "") // clear the line for the final summary
+			return
+		case <-ticker.C:
+			done := startIndex + atomic.LoadInt64(written)
+			elapsed := time.Since(start).Seconds()
+			rate := 0.0
+			if elapsed > 0 {
+				rate = float64(atomic.LoadInt64(written)) / elapsed
+			}
+			eta := "—"
+			if rate > 0 && done < total {
+				eta = fmtETA(time.Duration(float64(total-done)/rate) * time.Second)
+			}
+			fmt.Fprintf(os.Stderr, "\rseeding: %d/%d tuples (%.0f%%, %.0f tuples/sec, ETA %s)",
+				done, total, 100*float64(done)/float64(total), rate, eta)
+		}
+	}
 }

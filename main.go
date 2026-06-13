@@ -7,6 +7,7 @@ package main
 //	fgaperf run   -config config.yaml   run the load test, write report
 //	fgaperf all   -config config.yaml   all of the above, then delete the store
 //	fgaperf inspect -config config.yaml print the model analysis and exit
+//	fgaperf plan  -config config.yaml   preview seeded tuple counts; no server
 //	fgaperf cleanup -config config.yaml delete the store recorded in the state file
 //	fgaperf compare a.json b.json       render two results files side by side
 //	fgaperf gen-config -model model.json  emit a starter config.yaml on stdout
@@ -27,13 +28,20 @@ type State struct {
 	StoreID      string    `json:"store_id"`
 	ModelID      string    `json:"model_id"`
 	TupleCount   int       `json:"tuple_count"`
+	SeededTuples int       `json:"seeded_tuples"` // high-water mark for resume; == TupleCount when complete
+	SeedComplete bool      `json:"seed_complete"`
 	SeedDuration string    `json:"seed_duration"`
 	SeededAt     time.Time `json:"seeded_at"`
 }
 
+func saveState(cfg *Config, st *State) error {
+	data, _ := json.MarshalIndent(st, "", " ")
+	return os.WriteFile(cfg.StateFile, data, 0o644)
+}
+
 func main() {
 	if len(os.Args) < 2 {
-		fail("usage: fgaperf <setup|probe|run|all|inspect|cleanup|compare|gen-config> [-config config.yaml]")
+		fail("usage: fgaperf <setup|probe|run|all|inspect|plan|cleanup|compare|gen-config> [-config config.yaml]")
 	}
 	cmd := os.Args[1]
 	// gen-config is the one command that takes neither -config nor a loaded
@@ -48,6 +56,7 @@ func main() {
 	cfgPath := fs.String("config", "config.yaml", "path to config file (optional; defaults apply)")
 	keep := fs.Bool("keep", false, "all: keep the store and state file instead of deleting them")
 	allStores := fs.Bool("all-stores", false, "cleanup: delete every store whose name matches openfga.store_name")
+	resume := fs.Bool("resume", false, "setup: resume an interrupted seed recorded in the state file")
 	// Common load knobs as flags so a quick run doesn't need a config edit (or
 	// the sed dance the README used to recommend). Only flags actually passed
 	// override the config; defaults here are inert sentinels.
@@ -94,7 +103,7 @@ func main() {
 	// run and cleanup operate on an existing store and never read the model.
 	var analysis *Analysis
 	switch cmd {
-	case "inspect", "setup", "probe", "all":
+	case "inspect", "setup", "probe", "all", "plan":
 		analysis, err = LoadModel(cfg.ModelFile)
 		if err != nil {
 			fail("%v\nfgaperf needs a compiled OpenFGA authorization model; set model_file in the config (see examples/)", err)
@@ -109,8 +118,10 @@ func main() {
 	switch cmd {
 	case "inspect":
 		inspect(analysis, cfg)
+	case "plan":
+		plan(analysis, cfg)
 	case "setup":
-		_, err := setup(client, analysis, cfg)
+		_, err := setup(client, analysis, cfg, *resume)
 		check(err)
 	case "probe":
 		st := loadState(cfg)
@@ -137,7 +148,7 @@ func main() {
 // repeated runs against a deployed OpenFGA leave nothing behind. The store is
 // also deleted when a phase fails or the process is interrupted.
 func runAll(client *FGAClient, a *Analysis, cfg *Config, keep bool) error {
-	st, err := setup(client, a, cfg)
+	st, err := setup(client, a, cfg, false)
 	if err != nil {
 		return err
 	}
@@ -255,30 +266,69 @@ func inspect(a *Analysis, cfg *Config) {
 	}
 }
 
-func setup(client *FGAClient, a *Analysis, cfg *Config) (*State, error) {
-	storeID, err := client.CreateStore(cfg.OpenFGA.StoreName)
-	if err != nil {
-		return nil, fmt.Errorf("creating store: %w", err)
-	}
-	fmt.Printf("store created: %s\n", storeID)
-	modelID, err := client.WriteModel(storeID, a.RawModel)
-	if err != nil {
-		return nil, fmt.Errorf("writing model: %w", err)
-	}
-	fmt.Printf("model written: %s\n", modelID)
-
+func setup(client *FGAClient, a *Analysis, cfg *Config, resume bool) (*State, error) {
+	// Generate first: deterministic, and resume needs the same tuple order to
+	// know the prefix it already wrote is still the prefix it would write now.
 	world := NewWorld(a, cfg)
 	tuples := world.GenerateTuples()
-	fmt.Printf("generated %d tuples across %d cohorts\n", len(tuples), cfg.Seed.Cohorts)
-	dur, err := SeedStore(client, storeID, modelID, tuples, cfg)
-	if err != nil {
-		return nil, fmt.Errorf("seeding: %w", err)
-	}
-	fmt.Printf("seeded in %s (%.0f tuples/sec)\n", dur.Round(time.Millisecond), float64(len(tuples))/dur.Seconds())
 
-	st := &State{StoreID: storeID, ModelID: modelID, TupleCount: len(tuples), SeedDuration: dur.String(), SeededAt: time.Now().UTC()}
-	data, _ := json.MarshalIndent(st, "", " ")
-	if err := os.WriteFile(cfg.StateFile, data, 0o644); err != nil {
+	var st *State
+	startIndex := 0
+	resuming := false
+	if resume {
+		if data, err := os.ReadFile(cfg.StateFile); err == nil {
+			var prev State
+			if json.Unmarshal(data, &prev) == nil && prev.StoreID != "" && !prev.SeedComplete {
+				if prev.TupleCount != len(tuples) {
+					return nil, fmt.Errorf("cannot resume: the seed changed since it was interrupted (was %d tuples, now %d) — `fgaperf cleanup` then `setup` fresh", prev.TupleCount, len(tuples))
+				}
+				st = &prev
+				startIndex = prev.SeededTuples
+				resuming = true
+				fmt.Printf("resuming seed of store %s from tuple %d/%d\n", st.StoreID, startIndex, len(tuples))
+			}
+		}
+		if st == nil {
+			fmt.Fprintln(os.Stderr, "no resumable seed in the state file; starting fresh")
+		}
+	}
+
+	if st == nil {
+		storeID, err := client.CreateStore(cfg.OpenFGA.StoreName)
+		if err != nil {
+			return nil, fmt.Errorf("creating store: %w", err)
+		}
+		fmt.Printf("store created: %s\n", storeID)
+		modelID, err := client.WriteModel(storeID, a.RawModel)
+		if err != nil {
+			return nil, fmt.Errorf("writing model: %w", err)
+		}
+		fmt.Printf("model written: %s\n", modelID)
+		fmt.Printf("generated %d tuples across %d cohorts\n", len(tuples), cfg.Seed.Cohorts)
+		st = &State{StoreID: storeID, ModelID: modelID, TupleCount: len(tuples)}
+		// Persist a partial state up front so an interrupted seed is resumable.
+		if err := saveState(cfg, st); err != nil {
+			return nil, err
+		}
+	}
+
+	checkpoint := func(written int) {
+		st.SeededTuples = written
+		saveState(cfg, st) // best-effort mid-seed; the final save below is authoritative
+	}
+	dur, err := SeedStore(client, st.StoreID, st.ModelID, tuples, cfg, startIndex, resuming, checkpoint)
+	if err != nil {
+		saveState(cfg, st) // persist the last clean prefix so `setup -resume` can continue
+		return nil, fmt.Errorf("seeding: %w (resume with `fgaperf setup -resume`)", err)
+	}
+	seeded := len(tuples) - startIndex
+	fmt.Printf("seeded %d tuples in %s (%.0f tuples/sec)\n", seeded, dur.Round(time.Millisecond), float64(seeded)/dur.Seconds())
+
+	st.SeededTuples = len(tuples)
+	st.SeedComplete = true
+	st.SeedDuration = dur.String()
+	st.SeededAt = time.Now().UTC()
+	if err := saveState(cfg, st); err != nil {
 		return nil, err
 	}
 	return st, nil
