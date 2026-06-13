@@ -148,8 +148,32 @@ type MetricsConfig struct {
 }
 
 type CondConfig struct {
-	TupleParams  []string                  `yaml:"tuple_params"` // params bound at write time
-	ParamConfigs map[string]ParamGenConfig `yaml:"params"`
+	TupleParams    []string                  `yaml:"tuple_params"` // params bound at write time
+	ParamConfigs   map[string]ParamGenConfig `yaml:"params"`
+	tupleParamsSet bool                      `yaml:"-"`
+}
+
+func (c *CondConfig) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("condition config must be a mapping")
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		switch node.Content[i].Value {
+		case "tuple_params":
+			c.tupleParamsSet = true
+		case "params":
+		default:
+			return fmt.Errorf("field %s not found in type main.CondConfig", node.Content[i].Value)
+		}
+	}
+	type plain CondConfig
+	var p plain
+	if err := node.Decode(&p); err != nil {
+		return err
+	}
+	p.tupleParamsSet = c.tupleParamsSet
+	*c = CondConfig(p)
+	return nil
 }
 
 type ParamGenConfig struct {
@@ -194,10 +218,15 @@ type PoolConfig struct {
 
 func LoadConfigFile(path string) (*Config, error) {
 	cfg := &Config{}
+	var fields yamlFieldSet
 	if path != "" {
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			return nil, fmt.Errorf("reading config: %w", err)
+		}
+		fields, err = parseYAMLFieldSet(raw)
+		if err != nil {
+			return nil, fmt.Errorf("parsing config: %w", err)
 		}
 		// Unknown keys are fatal: a typo'd knob silently running with defaults
 		// produces numbers that look configured but aren't.
@@ -207,11 +236,47 @@ func LoadConfigFile(path string) (*Config, error) {
 			return nil, fmt.Errorf("parsing config: %w", err)
 		}
 	}
-	cfg.applyDefaults()
+	cfg.applyDefaults(fields)
 	if err := cfg.validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 	return cfg, nil
+}
+
+type yamlFieldSet map[string]bool
+
+func parseYAMLFieldSet(raw []byte) (yamlFieldSet, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return nil, err
+	}
+	fields := yamlFieldSet{}
+	if len(doc.Content) > 0 {
+		collectYAMLFields("", doc.Content[0], fields)
+	}
+	return fields, nil
+}
+
+func collectYAMLFields(prefix string, node *yaml.Node, fields yamlFieldSet) {
+	if node.Kind != yaml.MappingNode {
+		return
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key := node.Content[i].Value
+		path := key
+		if prefix != "" {
+			path = prefix + "." + key
+		}
+		fields[path] = true
+		collectYAMLFields(path, node.Content[i+1], fields)
+	}
+}
+
+func (f yamlFieldSet) has(parts ...string) bool {
+	if f == nil {
+		return false
+	}
+	return f[strings.Join(parts, ".")]
 }
 
 // validate checks cross-field invariants that don't need the model. Model-
@@ -282,6 +347,9 @@ func (c *Config) validate() error {
 					return fmt.Errorf("conditions.%s.params.%s references pool %q, which is not defined under pools", cond, param, pc.Pool)
 				}
 			}
+			if pc.Keys < 0 {
+				return fmt.Errorf("conditions.%s.params.%s.keys must be >= 0, got %d", cond, param, pc.Keys)
+			}
 			if d := pc.KeysDistribution; d != nil {
 				name := fmt.Sprintf("conditions.%s.params.%s.keys_distribution", cond, param)
 				if pc.Keys > 0 {
@@ -334,11 +402,47 @@ func (c *Config) validate() error {
 			return err
 		}
 	}
+	nonnegative := func(name string, v int) error {
+		if v < 0 {
+			return fmt.Errorf("%s must be >= 0, got %d", name, v)
+		}
+		return nil
+	}
+	if err := nonnegative("seed.default_fanout", c.Seed.DefaultFanout); err != nil {
+		return err
+	}
+	for typ, n := range c.Seed.Instances {
+		if err := nonnegative("seed.instances."+typ, n); err != nil {
+			return err
+		}
+	}
+	for key, n := range c.Seed.Fanout {
+		if err := nonnegative("seed.fanout."+key, n); err != nil {
+			return err
+		}
+	}
+	for name, p := range c.Pools {
+		if err := nonnegative("pools."+name+".count", p.Count); err != nil {
+			return err
+		}
+	}
 	if c.Load.Rate < 0 {
 		return fmt.Errorf("load.rate must be >= 0 (0 = closed loop), got %d", c.Load.Rate)
 	}
 	if c.Load.WriteRate < 0 {
 		return fmt.Errorf("load.write_rate must be >= 0, got %d", c.Load.WriteRate)
+	}
+	if c.OpenFGA.Timeout < 0 {
+		return fmt.Errorf("openfga.timeout must be >= 0, got %v", c.OpenFGA.Timeout)
+	}
+	if c.Load.Warmup < 0 {
+		return fmt.Errorf("load.warmup must be >= 0, got %v", c.Load.Warmup)
+	}
+	if c.Load.Duration <= 0 {
+		return fmt.Errorf("load.duration must be positive, got %v", c.Load.Duration)
+	}
+	if c.Load.Sweep.StepDuration < 0 {
+		return fmt.Errorf("load.sweep.step_duration must be >= 0, got %v", c.Load.Sweep.StepDuration)
 	}
 	for _, r := range c.Load.Sweep.Rates {
 		if r <= 0 {
@@ -347,6 +451,9 @@ func (c *Config) validate() error {
 	}
 	if len(c.Load.Sweep.Rates) > 0 && c.Load.Rate > 0 {
 		return fmt.Errorf("load.rate and load.sweep are mutually exclusive; sweep sets the rate per step")
+	}
+	if len(c.Load.Sweep.Rates) > 0 && c.Load.Sweep.StepDuration <= 0 {
+		return fmt.Errorf("load.sweep.step_duration must be positive when load.sweep.rates is set, got %v", c.Load.Sweep.StepDuration)
 	}
 	if c.Load.SLOP99 < 0 {
 		return fmt.Errorf("load.slo_p99 must be >= 0, got %v", c.Load.SLOP99)
@@ -428,8 +535,23 @@ func (c *Config) validateAgainstModel(a *Analysis) error {
 		}
 	}
 	for cond := range c.Conditions {
-		if _, ok := a.Model.Conditions[cond]; !ok {
+		modelCond, ok := a.Model.Conditions[cond]
+		if !ok {
 			return fmt.Errorf("conditions names condition %q, which is not in the model", cond)
+		}
+		knownParams := map[string]bool{}
+		for param := range modelCond.Parameters {
+			knownParams[param] = true
+		}
+		for _, param := range c.Conditions[cond].TupleParams {
+			if !knownParams[param] {
+				return fmt.Errorf("conditions.%s.tuple_params names parameter %q, which is not declared by the condition", cond, param)
+			}
+		}
+		for param := range c.Conditions[cond].ParamConfigs {
+			if !knownParams[param] {
+				return fmt.Errorf("conditions.%s.params names parameter %q, which is not declared by the condition", cond, param)
+			}
 		}
 	}
 	for _, st := range c.Probe.SubjectTypes {
@@ -456,20 +578,20 @@ func isTypeRelation(key string) bool {
 	return len(parts) == 2 && parts[0] != "" && parts[1] != ""
 }
 
-func (c *Config) applyDefaults() {
+func (c *Config) applyDefaults(fields yamlFieldSet) {
 	def := func(s *string, v string) {
 		if *s == "" {
 			*s = v
 		}
 	}
-	defInt := func(i *int, v int) {
-		if *i == 0 {
+	defInt := func(i *int, v int, path ...string) {
+		if *i == 0 && !fields.has(path...) {
 			*i = v
 		}
 	}
 	def(&c.OpenFGA.APIURL, "http://localhost:8080")
 	def(&c.OpenFGA.StoreName, "fgaperf")
-	if c.OpenFGA.Timeout == 0 {
+	if c.OpenFGA.Timeout == 0 && !fields.has("openfga", "timeout") {
 		c.OpenFGA.Timeout = 10 * time.Second
 	}
 	def(&c.ModelFile, "model.json")
@@ -477,38 +599,38 @@ func (c *Config) applyDefaults() {
 	def(&c.CorpusFile, "corpus.json")
 	def(&c.OutputDir, "results")
 
-	defInt(&c.Seed.Cohorts, 5)
-	defInt(&c.Seed.DefaultCount, 25)
-	defInt(&c.Seed.DefaultFanout, 2)
-	defInt(&c.Seed.BatchSize, 100)
-	defInt(&c.Seed.Writers, 8)
-	if c.Seed.WildcardProb == 0 {
+	defInt(&c.Seed.Cohorts, 5, "seed", "cohorts")
+	defInt(&c.Seed.DefaultCount, 25, "seed", "default_instances")
+	defInt(&c.Seed.DefaultFanout, 2, "seed", "default_fanout")
+	defInt(&c.Seed.BatchSize, 100, "seed", "batch_size")
+	defInt(&c.Seed.Writers, 8, "seed", "writers")
+	if c.Seed.WildcardProb == 0 && !fields.has("seed", "wildcard_probability") {
 		c.Seed.WildcardProb = 1.0
 	}
 
-	defInt(&c.Probe.Samples, 200)
-	defInt(&c.Probe.Concurrency, 8)
-	if c.Probe.CohortBias == 0 {
+	defInt(&c.Probe.Samples, 200, "probe", "samples_per_target")
+	defInt(&c.Probe.Concurrency, 8, "probe", "concurrency")
+	if c.Probe.CohortBias == 0 && !fields.has("probe", "cohort_bias") {
 		c.Probe.CohortBias = 0.85
 	}
-	if c.Probe.AllowedRatio == 0 {
+	if c.Probe.AllowedRatio == 0 && !fields.has("probe", "allowed_ratio") {
 		c.Probe.AllowedRatio = 0.5
 	}
-	if c.Probe.MaxDuplication == 0 {
+	if c.Probe.MaxDuplication == 0 && !fields.has("probe", "max_duplication") {
 		c.Probe.MaxDuplication = 5
 	}
 
-	defInt(&c.Load.Concurrency, 16)
-	if c.Load.Warmup == 0 {
+	defInt(&c.Load.Concurrency, 16, "load", "concurrency")
+	if c.Load.Warmup == 0 && !fields.has("load", "warmup") {
 		c.Load.Warmup = 10 * time.Second
 	}
-	if c.Load.Duration == 0 {
+	if c.Load.Duration == 0 && !fields.has("load", "duration") {
 		c.Load.Duration = 60 * time.Second
 	}
 	def(&c.Load.Consistency, "MINIMIZE_LATENCY")
 	def(&c.Load.Endpoint, "check")
-	defInt(&c.Load.BatchSize, 20)
-	if len(c.Load.Sweep.Rates) > 0 && c.Load.Sweep.StepDuration == 0 {
+	defInt(&c.Load.BatchSize, 20, "load", "batch_size")
+	if len(c.Load.Sweep.Rates) > 0 && c.Load.Sweep.StepDuration == 0 && !fields.has("load", "sweep", "step_duration") {
 		c.Load.Sweep.StepDuration = 60 * time.Second
 	}
 

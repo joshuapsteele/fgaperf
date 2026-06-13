@@ -250,7 +250,7 @@ func BuildSweepReport(results []*LoadResult, corpus *Corpus, cfg *Config, tupleC
 	r.mismatchRecords = nil
 	for _, res := range results {
 		for _, m := range res.MismatchRecords {
-			k := m.User + "|" + m.Relation + "|" + m.Object
+			k := m.key()
 			if seen[k] || len(r.mismatchRecords) >= maxMismatchRecords {
 				continue
 			}
@@ -564,11 +564,21 @@ func (r *Report) Markdown() string {
 		}
 		w("")
 	}
-	w("## Per-relation breakdown")
+	if r.Endpoint == "batch-check" {
+		w("## Batch breakdown")
+		w("")
+		w("*Batch-check latency is measured per HTTP batch. The `batch` row can mix several target relations, so use it as a batch population view rather than a per-relation diagnostic.*")
+	} else {
+		w("## Per-relation breakdown")
+		w("")
+		w("*Latency split out by relation. This is the cleanest place to ask \"is one specific relation hot?\" — populations above mix relations of different graph depth, but here every row is a single relation. A relation with much higher p99 than its peers usually means a deeper or denser resolution path; check the model.*")
+	}
 	w("")
-	w("*Latency split out by relation. This is the cleanest place to ask \"is one specific relation hot?\" — populations above mix relations of different graph depth, but here every row is a single relation. A relation with much higher p99 than its peers usually means a deeper or denser resolution path; check the model.*")
-	w("")
-	w("| Relation | Requests | Errors | Mean | p50 | p95 | p99 |")
+	label := "Relation"
+	if r.Endpoint == "batch-check" {
+		label = "Population"
+	}
+	w("| %s | Requests | Errors | Mean | p50 | p95 | p99 |", label)
 	w("|---|---|---|---|---|---|---|")
 	targets := make([]string, 0, len(r.ByTarget))
 	for t := range r.ByTarget {
@@ -612,7 +622,7 @@ func (r *Report) Markdown() string {
 		s := r.Server
 		w("## Server-side view")
 		w("")
-		w("*OpenFGA's own metrics for the measured phase. The client-side numbers above include HTTP and JSON overhead; these don't. Use them to separate \"the server is slow\" from \"the network/serialization is slow\", and to size the datastore by datastore queries per request.*")
+		w("*OpenFGA's own metrics for the measured phase. The client-side numbers above include HTTP and JSON overhead; these don't. Use them to separate \"the server is slow\" from \"the network/serialization is slow\", and to size the datastore by datastore queries per request. On a shared OpenFGA deployment, these Prometheus counters may include unrelated traffic unless the server exposes labels you can isolate.*")
 		w("")
 		w("Diffed from OpenFGA's Prometheus metrics between the start and end of the measured phase. Percentiles are estimated from histogram buckets, so they are coarser than the client-side numbers above.")
 		w("")
@@ -668,7 +678,7 @@ func (r *Report) Markdown() string {
 	w("")
 	w("**Saturation knee** — the highest sustained rate. Past it, achieved rate plateaus and response-latency p99 climbs. Useful for capacity planning: the knee, minus headroom, is what you can safely send.")
 	w("")
-	w("**Server-side view.** Diffed from OpenFGA's Prometheus histograms over the measured phase, so percentiles are bucket-estimated and slightly coarser than client-side. \"Datastore queries per request\" is the most portable capacity metric — independent of network and JSON overhead, so you can use it to size the database without identical client placement.")
+	w("**Server-side view.** Diffed from OpenFGA's Prometheus histograms over the measured phase, so percentiles are bucket-estimated and slightly coarser than client-side. \"Datastore queries per request\" is the most portable capacity metric — independent of network and JSON overhead, so you can use it to size the database without identical client placement. On shared servers, confirm the scraped metrics are not mixed with unrelated traffic.")
 	w("")
 	w("## Caveats and interpretation")
 	w("")

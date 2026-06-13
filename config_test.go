@@ -58,6 +58,41 @@ func TestConfigOverridesSurviveDefaults(t *testing.T) {
 	}
 }
 
+func TestExplicitZeroConfigValuesSurviveDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	yaml := `seed:
+  wildcard_probability: 0
+probe:
+  cohort_bias: 0
+  allowed_ratio: 0
+  max_duplication: 0
+load:
+  warmup: 0s
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfigFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Seed.WildcardProb != 0 {
+		t.Errorf("wildcard_probability = %v, want explicit zero", cfg.Seed.WildcardProb)
+	}
+	if cfg.Probe.CohortBias != 0 {
+		t.Errorf("cohort_bias = %v, want explicit zero", cfg.Probe.CohortBias)
+	}
+	if cfg.Probe.AllowedRatio != 0 {
+		t.Errorf("allowed_ratio = %v, want explicit zero", cfg.Probe.AllowedRatio)
+	}
+	if cfg.Probe.MaxDuplication != 0 {
+		t.Errorf("max_duplication = %v, want explicit zero", cfg.Probe.MaxDuplication)
+	}
+	if cfg.Load.Warmup != 0 {
+		t.Errorf("warmup = %v, want explicit zero", cfg.Load.Warmup)
+	}
+}
+
 // Misconfiguration that silently runs with defaults is data corruption for a
 // measurement tool: every bad config must fail fast, naming the bad key.
 func TestConfigRejectsUnknownKeys(t *testing.T) {
@@ -82,7 +117,19 @@ func TestConfigValidation(t *testing.T) {
 		"bad contextual key":         "contextual:\n  relations: [viewer]\n",
 		"missing pool":               "conditions:\n  has_scope:\n    params:\n      scopes: {pool: nope}\n",
 		"negative rate":              "load:\n  rate: -5\n",
-		"zero concurrency":           "load:\n  concurrency: -1\n",
+		"negative concurrency":       "load:\n  concurrency: -1\n",
+		"zero concurrency":           "load:\n  concurrency: 0\n",
+		"negative openfga timeout":   "openfga:\n  timeout: -1s\n",
+		"negative warmup":            "load:\n  warmup: -1s\n",
+		"zero duration":              "load:\n  duration: 0s\n",
+		"negative duration":          "load:\n  duration: -1s\n",
+		"negative sweep duration":    "load:\n  sweep:\n    rates: [100]\n    step_duration: -1s\n",
+		"zero sweep duration":        "load:\n  sweep:\n    rates: [100]\n    step_duration: 0s\n",
+		"negative default fanout":    "seed:\n  default_fanout: -1\n",
+		"negative fanout":            "seed:\n  fanout:\n    document#viewer: -1\n",
+		"negative instances":         "seed:\n  instances:\n    document: -1\n",
+		"negative pool count":        "pools:\n  default:\n    prefix: val-\n    count: -1\n",
+		"negative condition keys":    "conditions:\n  has_scope:\n    params:\n      granted_scopes: {keys: -1}\n",
 		"empty fanout user type":     "seed:\n  fanout:\n    \"group#member@\": 3\n",
 		"bad wildcard prob key":      "seed:\n  wildcard_probabilities:\n    notarelation: 0.5\n",
 		"wildcard prob out of range": "seed:\n  wildcard_probabilities:\n    \"document#viewer\": 1.5\n",
@@ -133,6 +180,10 @@ func TestValidateAgainstModel(t *testing.T) {
 		// relation exists but has no wildcard ref
 		func(c *Config) { c.Seed.WildcardProbs = map[string]float64{"document#editor": 0.5} },
 		func(c *Config) { c.Seed.WildcardProbs = map[string]float64{"document#nope": 0.5} },
+		func(c *Config) { c.Conditions = map[string]CondConfig{"has_scope": {TupleParams: []string{"nope"}}} },
+		func(c *Config) {
+			c.Conditions = map[string]CondConfig{"has_scope": {ParamConfigs: map[string]ParamGenConfig{"nope": {Keys: 1}}}}
+		},
 	}
 	for i, mutate := range bad {
 		cfg, _ := LoadConfigFile("")

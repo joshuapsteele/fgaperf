@@ -338,7 +338,7 @@ func (w *World) genValueWith(rng *rand.Rand, condName, param string, t ParamType
 	case "TYPE_NAME_BOOL":
 		return rng.Intn(2) == 0
 	case "TYPE_NAME_TIMESTAMP":
-		return time.Now().UTC().Format(time.RFC3339)
+		return seededTimestamp(rng)
 	case "TYPE_NAME_DURATION":
 		return "60s"
 	case "TYPE_NAME_LIST":
@@ -358,6 +358,12 @@ func (w *World) genValueWith(rng *rand.Rand, condName, param string, t ParamType
 	default:
 		return pick()
 	}
+}
+
+func seededTimestamp(rng *rand.Rand) string {
+	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	const secondsInYear = int64(365 * 24 * 60 * 60)
+	return base.Add(time.Duration(rng.Int63n(secondsInYear)) * time.Second).Format(time.RFC3339)
 }
 
 // batchWatermark tracks the contiguous-from-zero prefix of completed batches.

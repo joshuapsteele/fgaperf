@@ -88,10 +88,28 @@ type CorpusTargetStats struct {
 	Distinct int `json:"distinct"`
 }
 
-func (e CorpusEntry) key() string { return e.User + "|" + e.Relation + "|" + e.Object }
+func (e CorpusEntry) key() string {
+	data, err := json.Marshal(struct {
+		User             string         `json:"user"`
+		Relation         string         `json:"relation"`
+		Object           string         `json:"object"`
+		ContextualTuples []TupleKey     `json:"contextual_tuples,omitempty"`
+		Context          map[string]any `json:"context,omitempty"`
+	}{
+		User:             e.User,
+		Relation:         e.Relation,
+		Object:           e.Object,
+		ContextualTuples: e.ContextualTuples,
+		Context:          e.Context,
+	})
+	if err != nil {
+		return e.User + "|" + e.Relation + "|" + e.Object
+	}
+	return string(data)
+}
 
-// TargetStats computes total and distinct (user, relation, object) entries per
-// target. Derived from the entries so it is always consistent with them.
+// TargetStats computes total and distinct request identities per target.
+// Derived from the entries so it is always consistent with them.
 func (c *Corpus) TargetStats() map[string]CorpusTargetStats {
 	seen := map[string]map[string]bool{}
 	out := map[string]CorpusTargetStats{}
@@ -108,7 +126,7 @@ func (c *Corpus) TargetStats() map[string]CorpusTargetStats {
 	return out
 }
 
-// Distinct counts unique (user, relation, object) triples across the corpus.
+// Distinct counts unique request identities across the corpus.
 func (c *Corpus) Distinct() int {
 	seen := map[string]bool{}
 	for _, e := range c.Entries {

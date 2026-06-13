@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 )
@@ -83,5 +85,26 @@ func TestTupleContextParamsOverride(t *testing.T) {
 	}
 	if !reflect.DeepEqual(requestSide, []string{"granted_scopes"}) {
 		t.Errorf("request-side: got %v, want [granted_scopes]", requestSide)
+	}
+}
+
+func TestTupleContextParamsExplicitEmptyOverride(t *testing.T) {
+	a := loadExampleModel(t)
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	yaml := "conditions:\n  has_scope:\n    tuple_params: []\n"
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfigFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tupleSide, requestSide := a.TupleContextParams("has_scope", cfg)
+	if len(tupleSide) != 0 {
+		t.Errorf("tuple-side: got %v, want explicit empty override", tupleSide)
+	}
+	if !reflect.DeepEqual(requestSide, []string{"granted_scopes", "required_scope"}) {
+		t.Errorf("request-side: got %v, want every parameter on the request", requestSide)
 	}
 }

@@ -238,10 +238,11 @@ func (c *FGAClient) ListStores() ([]StoreInfo, error) {
 			Stores            []StoreInfo `json:"stores"`
 			ContinuationToken string      `json:"continuation_token"`
 		}
-		path := "/stores?page_size=100"
+		q := url.Values{"page_size": {"100"}}
 		if token != "" {
-			path += "&continuation_token=" + token
+			q.Set("continuation_token", token)
 		}
+		path := "/stores?" + q.Encode()
 		if err := c.do("GET", path, nil, &resp); err != nil {
 			return nil, err
 		}

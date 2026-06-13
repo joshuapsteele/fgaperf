@@ -51,7 +51,7 @@ Checks carrying contextual tuples ran -0.07 ms slower at p50 and -0.13 ms slower
 
 ## Server-side view
 
-*OpenFGA's own metrics for the measured phase. The client-side numbers above include HTTP and JSON overhead; these don't. Use them to separate "the server is slow" from "the network/serialization is slow", and to size the datastore by datastore queries per request.*
+*OpenFGA's own metrics for the measured phase. The client-side numbers above include HTTP and JSON overhead; these don't. Use them to separate "the server is slow" from "the network/serialization is slow", and to size the datastore by datastore queries per request. On a shared OpenFGA deployment, these Prometheus counters may include unrelated traffic unless the server exposes labels you can isolate.*
 
 Diffed from OpenFGA's Prometheus metrics between the start and end of the measured phase. Percentiles are estimated from histogram buckets, so they are coarser than the client-side numbers above.
 
@@ -91,7 +91,7 @@ Reference for the columns and terms used in this document. The README's Glossary
 
 **Saturation knee** — the highest sustained rate. Past it, achieved rate plateaus and response-latency p99 climbs. Useful for capacity planning: the knee, minus headroom, is what you can safely send.
 
-**Server-side view.** Diffed from OpenFGA's Prometheus histograms over the measured phase, so percentiles are bucket-estimated and slightly coarser than client-side. "Datastore queries per request" is the most portable capacity metric — independent of network and JSON overhead, so you can use it to size the database without identical client placement.
+**Server-side view.** Diffed from OpenFGA's Prometheus histograms over the measured phase, so percentiles are bucket-estimated and slightly coarser than client-side. "Datastore queries per request" is the most portable capacity metric — independent of network and JSON overhead, so you can use it to size the database without identical client placement. On shared servers, confirm the scraped metrics are not mixed with unrelated traffic.
 
 ## Caveats and interpretation
 

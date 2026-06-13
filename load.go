@@ -35,6 +35,8 @@ type Sample struct {
 	Mismatch    bool
 	Items       int // 1 for check; batch size for batch-check
 	ResultCount int // list-objects/list-users: size of the returned set (-1 = N/A)
+
+	mismatchRecords []MismatchRecord
 }
 
 type LoadResult struct {
@@ -135,12 +137,14 @@ const (
 // from its probe-time expectation — the raw material for investigating cache
 // staleness or consistency effects.
 type MismatchRecord struct {
-	User     string `json:"user"`
-	Relation string `json:"relation"`
-	Object   string `json:"object"`
-	Target   string `json:"target"`
-	Expected bool   `json:"expected"`
-	Observed bool   `json:"observed"`
+	User             string         `json:"user"`
+	Relation         string         `json:"relation"`
+	Object           string         `json:"object"`
+	Target           string         `json:"target"`
+	ContextualTuples []TupleKey     `json:"contextual_tuples,omitempty"`
+	Context          map[string]any `json:"context,omitempty"`
+	Expected         bool           `json:"expected"`
+	Observed         bool           `json:"observed"`
 }
 
 // mismatchRecorder collects deduplicated mismatches, capped so a
@@ -157,17 +161,51 @@ func newMismatchRecorder() *mismatchRecorder {
 }
 
 func (r *mismatchRecorder) record(e *CorpusEntry, observed bool) {
+	r.recordRecord(newMismatchRecord(e, observed))
+}
+
+func (r *mismatchRecorder) recordRecord(m MismatchRecord) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	k := e.key()
+	k := m.key()
 	if r.seen[k] || len(r.out) >= maxMismatchRecords {
 		return
 	}
 	r.seen[k] = true
-	r.out = append(r.out, MismatchRecord{
-		User: e.User, Relation: e.Relation, Object: e.Object,
-		Target: e.Target, Expected: e.Expected, Observed: observed,
+	r.out = append(r.out, m)
+}
+
+func newMismatchRecord(e *CorpusEntry, observed bool) MismatchRecord {
+	return MismatchRecord{
+		User:             e.User,
+		Relation:         e.Relation,
+		Object:           e.Object,
+		Target:           e.Target,
+		ContextualTuples: e.ContextualTuples,
+		Context:          e.Context,
+		Expected:         e.Expected,
+		Observed:         observed,
+	}
+}
+
+func (m MismatchRecord) key() string {
+	data, err := json.Marshal(struct {
+		User             string         `json:"user"`
+		Relation         string         `json:"relation"`
+		Object           string         `json:"object"`
+		ContextualTuples []TupleKey     `json:"contextual_tuples,omitempty"`
+		Context          map[string]any `json:"context,omitempty"`
+	}{
+		User:             m.User,
+		Relation:         m.Relation,
+		Object:           m.Object,
+		ContextualTuples: m.ContextualTuples,
+		Context:          m.Context,
 	})
+	if err != nil {
+		return m.User + "|" + m.Relation + "|" + m.Object
+	}
+	return string(data)
 }
 
 // corpusPicker selects corpus entries for replay. Without configured weights
@@ -271,12 +309,12 @@ func newSampleWriter(path string, appendMode bool) (*sampleWriter, error) {
 	return sw, nil
 }
 
-func (w *sampleWriter) write(s Sample, offeredRate int) {
+func (w *sampleWriter) write(s Sample, offeredRate int) error {
 	var rc *int
 	if s.ResultCount >= 0 {
 		rc = &s.ResultCount
 	}
-	w.enc.Encode(&SampleRecord{
+	return w.enc.Encode(&SampleRecord{
 		T:             s.Completed.UnixNano(),
 		Target:        s.Target,
 		OfferedRate:   offeredRate,
@@ -339,6 +377,14 @@ func RunLoad(client *FGAClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 		OfferedRate: lc.Rate,
 		Warmup:      lc.Warmup,
 		Duration:    lc.Duration,
+	}
+	var sw *sampleWriter
+	if lc.SampleFile != "" {
+		var err error
+		sw, err = newSampleWriter(lc.SampleFile, lc.sampleAppend)
+		if err != nil {
+			return nil, fmt.Errorf("opening sample_file %q: %w", lc.SampleFile, err)
+		}
 	}
 
 	start := time.Now()
@@ -444,13 +490,16 @@ func RunLoad(client *FGAClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 				s.RespLatency = s.Completed.Sub(intended)
 			}
 			atomic.AddInt64(&checks, int64(s.Items))
-			if s.Err {
-				atomic.AddInt64(&errCount, 1)
-			}
-			if s.Mismatch {
-				atomic.AddInt64(&mismatches, 1)
-			}
 			if s.Completed.After(warmupEnd) {
+				if s.Err {
+					atomic.AddInt64(&errCount, 1)
+				}
+				if s.Mismatch {
+					atomic.AddInt64(&mismatches, 1)
+					for _, rec := range s.mismatchRecords {
+						mism.recordRecord(rec)
+					}
+				}
 				sampleCh <- s
 			}
 		}
@@ -467,16 +516,9 @@ func RunLoad(client *FGAClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 		close(stopRate)
 		close(done)
 	}()
-	var sw *sampleWriter
-	if cfg.Load.SampleFile != "" {
-		var err error
-		sw, err = newSampleWriter(cfg.Load.SampleFile, cfg.Load.sampleAppend)
-		if err != nil {
-			return nil, fmt.Errorf("opening sample_file %q: %w", cfg.Load.SampleFile, err)
-		}
-	}
 	res.ErrorsByClass = map[string]int64{}
 	var firstDone, lastDone time.Time
+	var writeErr error
 	for s := range sampleCh {
 		if firstDone.IsZero() || s.Completed.Before(firstDone) {
 			firstDone = s.Completed
@@ -491,13 +533,19 @@ func RunLoad(client *FGAClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 			}
 		}
 		if sw != nil {
-			sw.write(s, lc.Rate)
+			if writeErr == nil {
+				if err := sw.write(s, lc.Rate); err != nil {
+					writeErr = fmt.Errorf("writing sample_file %q: %w", lc.SampleFile, err)
+				}
+			}
 		}
 		res.Samples = append(res.Samples, s)
 	}
 	if sw != nil {
 		if err := sw.Close(); err != nil {
-			fmt.Fprintf(os.Stderr, "sample_file: closing %q failed: %v\n", cfg.Load.SampleFile, err)
+			if writeErr == nil {
+				writeErr = fmt.Errorf("closing sample_file %q: %w", lc.SampleFile, err)
+			}
 		}
 	}
 	<-done
@@ -524,6 +572,9 @@ func RunLoad(client *FGAClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 	res.TotalChecks = checks
 	res.Mismatches = mismatches
 	res.MismatchRecords = mism.out
+	if writeErr != nil {
+		return nil, writeErr
+	}
 	return res, nil
 }
 
@@ -576,7 +627,7 @@ func doCheck(client *FGAClient, picker *corpusPicker, mism *mismatchRecorder, co
 		s.ErrMsg = err.Error()
 	} else if cfg.Load.VerifyResults && allowed != e.Expected {
 		s.Mismatch = true
-		mism.record(e, allowed)
+		s.mismatchRecords = append(s.mismatchRecords, newMismatchRecord(e, allowed))
 	}
 	return s
 }
@@ -614,13 +665,37 @@ func doBatch(client *FGAClient, picker *corpusPicker, mism *mismatchRecorder, co
 		s.ErrMsg = err.Error()
 		return s
 	}
-	if cfg.Load.VerifyResults {
-		for id, r := range resp.Result {
-			if e, ok := entries[id]; ok && r.Error == nil && r.Allowed != e.Expected {
+	var itemErrs []string
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("c%d", i)
+		r, ok := resp.Result[id]
+		if !ok {
+			itemErrs = append(itemErrs, id+": missing result")
+			continue
+		}
+		if r.Error != nil {
+			msg := r.Error.Message
+			if msg == "" {
+				msg = "item error"
+			}
+			itemErrs = append(itemErrs, id+": "+msg)
+			continue
+		}
+		if cfg.Load.VerifyResults {
+			if e, ok := entries[id]; ok && r.Allowed != e.Expected {
 				s.Mismatch = true
-				mism.record(e, r.Allowed)
+				s.mismatchRecords = append(s.mismatchRecords, newMismatchRecord(e, r.Allowed))
 			}
 		}
+	}
+	if len(itemErrs) > 0 {
+		s.Err = true
+		s.ErrClass = "batch-item"
+		details := itemErrs
+		if len(details) > 3 {
+			details = append(append([]string{}, details[:3]...), fmt.Sprintf("%d more", len(itemErrs)-3))
+		}
+		s.ErrMsg = fmt.Sprintf("batch-check item errors (%d/%d): %s", len(itemErrs), n, strings.Join(details, "; "))
 	}
 	return s
 }
@@ -661,7 +736,7 @@ func doListObjects(client *FGAClient, picker *corpusPicker, mism *mismatchRecord
 		}
 		if present != e.Expected {
 			s.Mismatch = true
-			mism.record(e, present)
+			s.mismatchRecords = append(s.mismatchRecords, newMismatchRecord(e, present))
 		}
 	}
 	return s
@@ -708,7 +783,7 @@ func doListUsers(client *FGAClient, picker *corpusPicker, mism *mismatchRecorder
 		}
 		if present != e.Expected {
 			s.Mismatch = true
-			mism.record(e, present)
+			s.mismatchRecords = append(s.mismatchRecords, newMismatchRecord(e, present))
 		}
 	}
 	return s

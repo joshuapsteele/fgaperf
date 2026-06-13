@@ -4,6 +4,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -114,6 +115,21 @@ func TestEndpointNoun(t *testing.T) {
 		if got := endpointNoun(endpoint); got != want {
 			t.Errorf("endpointNoun(%q) = %q, want %q", endpoint, got, want)
 		}
+	}
+}
+
+func TestBatchCheckMarkdownLabelsBatchBreakdown(t *testing.T) {
+	r := fixedReport()
+	r.Endpoint = "batch-check"
+	r.ByTarget = map[string]Stats{
+		"batch": {Count: 10, Items: 200, P50: 2 * time.Millisecond, P95: 4 * time.Millisecond, P99: 6 * time.Millisecond},
+	}
+	md := r.Markdown()
+	if strings.Contains(md, "## Per-relation breakdown") {
+		t.Fatal("batch-check markdown should not label mixed batches as per-relation")
+	}
+	if !strings.Contains(md, "## Batch breakdown") {
+		t.Fatal("batch-check markdown missing batch breakdown heading")
 	}
 }
 

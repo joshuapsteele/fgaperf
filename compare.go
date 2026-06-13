@@ -45,8 +45,20 @@ func comparabilityCaveats(a, b *Report) []string {
 	if a.Duration != b.Duration {
 		out = append(out, fmt.Sprintf("measured duration differs (%s vs %s); percentile stability differs between the runs", a.Duration, b.Duration))
 	}
+	if a.Warmup != b.Warmup {
+		out = append(out, fmt.Sprintf("warmup differs (%s vs %s); cache and connection state may differ at measurement start", a.Warmup, b.Warmup))
+	}
 	if a.Concurrency != b.Concurrency {
 		out = append(out, fmt.Sprintf("concurrency differs (%d vs %d workers); closed-loop throughput is not comparable", a.Concurrency, b.Concurrency))
+	}
+	if a.OfferedRate != b.OfferedRate {
+		out = append(out, fmt.Sprintf("offered rate differs (%d vs %d req/s); latency and saturation are not directly comparable", a.OfferedRate, b.OfferedRate))
+	}
+	if a.WriteRate != b.WriteRate {
+		out = append(out, fmt.Sprintf("write churn differs (%d vs %d writes/sec); cache invalidation pressure differs", a.WriteRate, b.WriteRate))
+	}
+	if (len(a.Sweep) > 0) != (len(b.Sweep) > 0) {
+		out = append(out, "sweep mode differs; one report is a multi-rate sweep and the other is a single measured run")
 	}
 	if a.ToolVersion != b.ToolVersion {
 		out = append(out, fmt.Sprintf("tool version differs (%s vs %s)", a.ToolVersion, b.ToolVersion))

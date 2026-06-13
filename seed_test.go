@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -194,6 +195,17 @@ func TestKeysDistributionBimodal(t *testing.T) {
 	}
 	if sizes[1] == 0 || sizes[8] == 0 {
 		t.Fatalf("bimodal distribution did not produce both modes: %v", sizes)
+	}
+}
+
+func TestSeededTimestampDeterministic(t *testing.T) {
+	first := seededTimestamp(rand.New(rand.NewSource(11)))
+	second := seededTimestamp(rand.New(rand.NewSource(11)))
+	if first != second {
+		t.Fatalf("same seed produced timestamps %q and %q", first, second)
+	}
+	if first == time.Now().UTC().Format(time.RFC3339) {
+		t.Fatalf("seeded timestamp unexpectedly used wall-clock time: %q", first)
 	}
 }
 

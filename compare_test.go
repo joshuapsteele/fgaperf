@@ -68,10 +68,23 @@ func TestCompareMarkdownCaveatsIncomparableRuns(t *testing.T) {
 	b := sampleReport()
 	b.Endpoint = "batch-check"
 	b.Duration = "30s"
+	b.OfferedRate = 500
+	b.Warmup = "0s"
+	b.WriteRate = 25
+	b.Sweep = []SweepStep{{OfferedRate: 500}}
 
 	md := CompareMarkdown("a.json", "b.json", a, b)
-	if !strings.Contains(md, "not directly comparable") || !strings.Contains(md, "endpoint differs") {
-		t.Error("incomparable runs not caveated")
+	for _, want := range []string{
+		"not directly comparable",
+		"endpoint differs",
+		"offered rate differs",
+		"warmup differs",
+		"write churn differs",
+		"sweep mode differs",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("compare markdown missing caveat %q:\n%s", want, md)
+		}
 	}
 }
 

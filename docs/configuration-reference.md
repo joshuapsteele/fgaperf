@@ -184,7 +184,7 @@ The model and graph cannot have changed, so the usual causes are:
 
 | Field | Default | Description |
 |---|---|---|
-| `metrics.prometheus_url` | unset | OpenFGA's Prometheus metrics endpoint (the docker-compose stack publishes `http://localhost:2112`). When set, fgaperf scrapes the endpoint at the start and end of the measured phase and reports the diff: request duration, datastore queries per check, dispatches, cache hit rate. |
+| `metrics.prometheus_url` | unset | OpenFGA's Prometheus metrics endpoint (the docker-compose stack publishes `http://localhost:2112`). When set, fgaperf scrapes the endpoint at the start and end of the measured phase and reports the diff: request duration, datastore queries per check, dispatches, cache hit rate. On a shared OpenFGA deployment, these metrics may include unrelated traffic unless the server exposes labels you can isolate for this run. |
 
 `Datastore queries per request` is the most portable capacity metric — it's
 independent of network and JSON encoding, so it sizes the database without

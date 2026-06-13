@@ -464,7 +464,9 @@ metrics:
   # OpenFGA Prometheus endpoint. The bundled compose stack publishes :2112.
   # When set, the findings doc gains a server-side view (request duration,
   # datastore queries per check, dispatches, cache hits) diffed over the
-  # measured phase only. Unreachable URL = section skipped.
+  # measured phase only. On shared OpenFGA deployments, these counters may
+  # include unrelated traffic unless labels let you isolate this run.
+  # Unreachable URL = section skipped.
   prometheus_url: http://localhost:2112
 `)
 }

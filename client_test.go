@@ -17,15 +17,16 @@ func testClient(handler http.HandlerFunc) (*FGAClient, *httptest.Server) {
 
 func TestListStoresPaginates(t *testing.T) {
 	calls := 0
+	nextToken := "next+a/b&c="
 	client, srv := testClient(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		switch r.URL.Query().Get("continuation_token") {
 		case "":
 			json.NewEncoder(w).Encode(map[string]any{
 				"stores":             []StoreInfo{{ID: "1", Name: "a"}, {ID: "2", Name: "b"}},
-				"continuation_token": "next",
+				"continuation_token": nextToken,
 			})
-		case "next":
+		case nextToken:
 			json.NewEncoder(w).Encode(map[string]any{
 				"stores":             []StoreInfo{{ID: "3", Name: "c"}},
 				"continuation_token": "",

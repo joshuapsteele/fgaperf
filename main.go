@@ -39,6 +39,29 @@ func saveState(cfg *Config, st *State) error {
 	return os.WriteFile(cfg.StateFile, data, 0o644)
 }
 
+func validateResumeState(st State, tupleCount int) error {
+	if st.TupleCount != tupleCount {
+		return fmt.Errorf("cannot resume: the seed changed since it was interrupted (was %d tuples, now %d) — `fgaperf cleanup` then `setup` fresh", st.TupleCount, tupleCount)
+	}
+	if st.SeededTuples < 0 || st.SeededTuples > st.TupleCount {
+		return fmt.Errorf("cannot resume: state seeded_tuples %d is outside 0..%d", st.SeededTuples, st.TupleCount)
+	}
+	return nil
+}
+
+func validateStateCorpus(st *State, corpus *Corpus) error {
+	if st == nil || corpus == nil {
+		return nil
+	}
+	if st.StoreID != "" && corpus.StoreID != "" && st.StoreID != corpus.StoreID {
+		return fmt.Errorf("state/corpus mismatch: state store_id %q does not match corpus store_id %q; run setup and probe for the same store", st.StoreID, corpus.StoreID)
+	}
+	if st.ModelID != "" && corpus.ModelID != "" && st.ModelID != corpus.ModelID {
+		return fmt.Errorf("state/corpus mismatch: state model_id %q does not match corpus model_id %q; run setup and probe for the same model", st.ModelID, corpus.ModelID)
+	}
+	return nil
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		fail("usage: fgaperf <setup|probe|run|all|inspect|plan|cleanup|compare|gen-config> [-config config.yaml]")
@@ -64,7 +87,7 @@ func main() {
 	warmupFlag := fs.Duration("warmup", 0, "override load.warmup")
 	rateFlag := fs.Int("rate", 0, "override load.rate (req/s; 0 = closed loop)")
 	concFlag := fs.Int("concurrency", 0, "override load.concurrency")
-	endpointFlag := fs.String("endpoint", "", "override load.endpoint (check|batch-check)")
+	endpointFlag := fs.String("endpoint", "", "override load.endpoint (check|batch-check|list-objects|list-users)")
 	consistencyFlag := fs.String("consistency", "", "override load.consistency (MINIMIZE_LATENCY|HIGHER_CONSISTENCY)")
 	outDirFlag := fs.String("output-dir", "", "override output_dir")
 	fs.Parse(os.Args[2:])
@@ -279,8 +302,8 @@ func setup(client *FGAClient, a *Analysis, cfg *Config, resume bool) (*State, er
 		if data, err := os.ReadFile(cfg.StateFile); err == nil {
 			var prev State
 			if json.Unmarshal(data, &prev) == nil && prev.StoreID != "" && !prev.SeedComplete {
-				if prev.TupleCount != len(tuples) {
-					return nil, fmt.Errorf("cannot resume: the seed changed since it was interrupted (was %d tuples, now %d) — `fgaperf cleanup` then `setup` fresh", prev.TupleCount, len(tuples))
+				if err := validateResumeState(prev, len(tuples)); err != nil {
+					return nil, err
 				}
 				st = &prev
 				startIndex = prev.SeededTuples
@@ -370,6 +393,9 @@ func run(client *FGAClient, cfg *Config, st *State) error {
 	corpus, err := LoadCorpus(cfg.CorpusFile)
 	if err != nil {
 		return fmt.Errorf("loading corpus (run probe first?): %w", err)
+	}
+	if err := validateStateCorpus(st, corpus); err != nil {
+		return err
 	}
 	fmt.Printf("load: endpoint=%s concurrency=%d rate=%v warmup=%s duration=%s consistency=%s\n",
 		cfg.Load.Endpoint, cfg.Load.Concurrency, cfg.Load.Rate, cfg.Load.Warmup, cfg.Load.Duration, cfg.Load.Consistency)

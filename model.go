@@ -255,7 +255,7 @@ func (a *Analysis) TupleContextParams(condName string, cfg *Config) (tupleSide, 
 	}
 	sort.Strings(names)
 	for _, p := range names {
-		if hasOverride && len(override.TupleParams) > 0 {
+		if hasOverride && (override.tupleParamsSet || len(override.TupleParams) > 0) {
 			if contains(override.TupleParams, p) {
 				tupleSide = append(tupleSide, p)
 			} else {

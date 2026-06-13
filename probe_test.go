@@ -131,6 +131,24 @@ func TestCorpusDuplicationStats(t *testing.T) {
 	}
 }
 
+func TestCorpusDistinctIncludesRequestContext(t *testing.T) {
+	c := &Corpus{Entries: []CorpusEntry{
+		{Target: "a#r", User: "user:1", Relation: "r", Object: "a:1", Context: map[string]any{"scope": "read"}},
+		{Target: "a#r", User: "user:1", Relation: "r", Object: "a:1", Context: map[string]any{"scope": "write"}},
+		{Target: "a#r", User: "user:1", Relation: "r", Object: "a:1", ContextualTuples: []TupleKey{{
+			User:     "user:1",
+			Relation: "active_context",
+			Object:   "a:1",
+		}}},
+	}}
+	if got := c.Distinct(); got != 3 {
+		t.Fatalf("Distinct() = %d, want 3 request identities", got)
+	}
+	if st := c.TargetStats()["a#r"]; st.Total != 3 || st.Distinct != 3 {
+		t.Fatalf("stats = %+v, want total 3 distinct 3", st)
+	}
+}
+
 func TestContextualTuplesUseSameObjectWhenTypesMatch(t *testing.T) {
 	a := loadExampleModel(t)
 	cfg, _ := LoadConfigFile("")

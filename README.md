@@ -215,7 +215,7 @@ long-form reference. The most important knobs are:
 | `load.sweep.rates`, `load.slo_p99` | Step through several offered rates in one run to find the **saturation knee** — the highest rate the server sustained (achieved ≥ 98% of offered, and response-latency p99 under `slo_p99` when set). Mutually exclusive with `load.rate`. |
 | `load.write_rate` | Background tuple writes/sec during the measured phase, so checks run against a churning store instead of the read-only best case. Churn tuples only ever link fresh churn-only instances, so `verify_results` stays meaningful. |
 | `load.consistency` | [`MINIMIZE_LATENCY`](https://openfga.dev/docs/interacting/consistency) (cached, fast, may be stale) or `HIGHER_CONSISTENCY` (skips caches; slower, fresh). |
-| `metrics.prometheus_url` | OpenFGA's [Prometheus metrics](https://openfga.dev/docs/getting-started/setup-openfga/configuration) endpoint (the compose stack publishes `http://localhost:2112`). When set, results gain a server-side view: request duration, datastore queries per check, dispatches, cache hit rate — diffed over the measured phase only. |
+| `metrics.prometheus_url` | OpenFGA's [Prometheus metrics](https://openfga.dev/docs/getting-started/setup-openfga/configuration) endpoint (the compose stack publishes `http://localhost:2112`). When set, results gain a server-side view: request duration, datastore queries per check, dispatches, cache hit rate — diffed over the measured phase only. On shared OpenFGA deployments, these counters can include unrelated traffic unless the exposed labels let you isolate this run. |
 | `conditions`, `pools` | Tuple-side and request-side [CEL condition](https://openfga.dev/docs/modeling/conditions) context generation. A param's `keys` may be replaced with `keys_distribution: {values: [2, 12], weights: [0.9, 0.1]}` to draw map/list sizes per tuple (most maps small, some big — closer to real data). |
 | `random_seed` | Makes generated data and probes repeatable. Same seed + same config = same tuple graph and corpus. |
 
@@ -264,7 +264,7 @@ The sections are:
 | Latency over time | The measured window sliced into ~12 time buckets (throughput, p50, p99 with a sparkline). Exposes cache fill-in, GC pauses, and gradual degradation that aggregate percentiles hide. |
 | Per-relation breakdown | The most useful place to compare similar paths, including per-relation error counts. |
 | Rate sweep | One row per swept rate (achieved rate, latency, response p99, datastore queries/request) with the saturation knee marked. Only present for sweep runs. |
-| Server-side view | OpenFGA's own Prometheus metrics diffed over the measured phase: request duration, datastore queries and dispatches per check, cache hit rate. Only present when `metrics.prometheus_url` is set. |
+| Server-side view | OpenFGA's own Prometheus metrics diffed over the measured phase: request duration, datastore queries and dispatches per check, cache hit rate. Only present when `metrics.prometheus_url` is set. On shared servers, confirm the scrape is not mixed with unrelated traffic. |
 | Background tuple writes | Latency of the churn write/delete calls, plus a note that the check populations were measured under that write rate. Only present when `load.write_rate` is set. |
 | Errors | Error counts by class (timeout, connection, 4xx, 5xx, decode) with the first few verbatim messages. |
 | Write path | Tuple seeding throughput. |

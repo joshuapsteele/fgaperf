@@ -148,7 +148,9 @@ you did. Two levers help separate the components:
   request-duration histogram and, crucially, **datastore queries per request** —
   the most portable capacity metric, independent of where your client sits. When
   client-side p99 is far above server-side p99, the gap is network and
-  serialization, not OpenFGA.
+  serialization, not OpenFGA. On shared OpenFGA deployments, verify the scraped
+  Prometheus series are isolated to this run; otherwise unrelated traffic can
+  skew the server-side view.
 - Running the generator close to the server isolates server + datastore behavior;
   running it where your real callers sit measures end-to-end caller experience.
 
