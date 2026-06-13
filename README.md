@@ -73,11 +73,19 @@ sed -e 's/warmup: 10s/warmup: 2s/' -e 's/duration: 60s/duration: 8s/' \
 ./fgaperf probe   -config examples/config.yaml   # build corpus.json
 ./fgaperf run     -config examples/config.yaml   # run load, write results/
 ./fgaperf cleanup -config examples/config.yaml   # delete the recorded store
+
+# diff two runs (latency deltas, server-side deltas, config differences):
+./fgaperf compare -config examples/config.yaml results/results-A.json results/results-B.json
 ```
 
 Use `all` for normal one-shot runs. Use the separate phases when you want to
 re-run load against the same seeded store. Set `keep_store: true` or pass
 `-keep` if you do not want `all` to delete the store at the end.
+
+`compare` takes two results JSON files and writes a `compare-<stamp>.md` that
+tables the latency and server-side deltas, names every config key that
+differed between the runs, and calls out anything that makes the comparison
+apples-to-oranges (different endpoint, corpus size, duration, or concurrency).
 
 ## Using Your Own Model
 
@@ -114,17 +122,21 @@ The most important knobs are:
 
 | Knob | Effect |
 |---|---|
-| `seed.instances`, `seed.fanout` | Size and density of the generated graph. |
+| `seed.instances`, `seed.fanout` | Size and density of the generated graph. Fanout keys take an optional `@usertype` suffix to set fanout per accepted user type (`document#editor@user: 0`, `document#editor@group#member: 4`); the bare key stays the default for the rest. |
 | `seed.cohorts` | Tenant-like partitions; tuples are biased within cohorts so intersections can resolve. |
+| `seed.wildcard_probability`, `seed.wildcard_probabilities` | Chance each object gets a wildcard (`user:*`) tuple where the model allows one; the plural form overrides it per `type#relation`. |
 | `contextual.relations` | Direct relations supplied per request as contextual tuples instead of persisted seed tuples. |
 | `contextual.attach_probability` | Probability a sampled check carries contextual tuples. Use `1.0` when every production request carries context, or less than `1.0` to include denied missing-context paths. |
-| `probe.targets` | Relations to measure. Omit to probe all relations. |
+| `probe.targets` | Relations to measure. Omit to probe all relations. Entries are bare strings or `{relation: document#viewer, weight: 8}`; weights skew the load phase's traffic mix toward production-like shares. |
 | `probe.allowed_ratio` | Desired allowed/denied mix in the corpus. Use `-1` to keep the natural mix. |
 | `probe.max_duplication` | Caps how far probe may duplicate scarce outcomes to hit `allowed_ratio` (default `5`, `-1` = unbounded). Targets that would exceed it keep their natural mix, with a warning. |
 | `load.endpoint` | `check` or `batch-check`. |
 | `load.rate` | Fixed offered requests/sec. `0` means closed-loop saturation testing. |
+| `load.sweep.rates`, `load.slo_p99` | Step through several offered rates in one run to find the saturation knee — the highest rate the server sustained (achieved ≥ 98% of offered, and response-latency p99 under `slo_p99` when set). Mutually exclusive with `load.rate`. |
+| `load.write_rate` | Background tuple writes/sec during the measured phase, so checks run against a churning store instead of the read-only best case. Churn tuples only ever link fresh churn-only instances, so `verify_results` stays meaningful. |
 | `load.consistency` | `MINIMIZE_LATENCY` or `HIGHER_CONSISTENCY`. |
-| `conditions`, `pools` | Tuple-side and request-side CEL condition context generation. |
+| `metrics.prometheus_url` | OpenFGA's metrics endpoint (the compose stack publishes `http://localhost:2112`). When set, results gain a server-side view: request duration, datastore queries per check, dispatches, cache hit rate — diffed over the measured phase only. |
+| `conditions`, `pools` | Tuple-side and request-side CEL condition context generation. A param's `keys` may be replaced with `keys_distribution: {values: [2, 12], weights: [0.9, 0.1]}` to draw map/list sizes per tuple. |
 | `random_seed` | Makes generated data and probes repeatable. |
 
 Configs are validated strictly: unknown keys, out-of-range values, and names
@@ -156,6 +168,9 @@ The generated findings document includes:
 | CEL-conditioned paths | Checks whose resolution can evaluate a CEL condition. |
 | Contextual tuples | Checks sent with request-local contextual tuples. |
 | Per-relation breakdown | The most useful place to compare similar paths, including per-relation error counts. |
+| Rate sweep | One row per swept rate (achieved rate, latency, response p99, datastore queries/request) with the saturation knee marked. Only present for sweep runs. |
+| Server-side view | OpenFGA's own Prometheus metrics diffed over the measured phase: request duration, datastore queries and dispatches per check, cache hit rate. Only present when `metrics.prometheus_url` is set. |
+| Background tuple writes | Latency of the churn write/delete calls, plus a note that the check populations were measured under that write rate. Only present when `load.write_rate` is set. |
 | Errors | Error counts by class (timeout, connection, 4xx, 5xx, decode) with the first few verbatim messages. |
 | Write path | Tuple seeding throughput. |
 
@@ -164,7 +179,13 @@ for estimating latency at a realistic offered load. Fixed-rate findings also
 report the *achieved* rate against the offered rate and a separate
 response-latency row measured from each request's scheduled send time; when the
 server cannot keep up, that row — not service latency — is what callers would
-experience.
+experience. A `load.sweep` run automates the rate search: it steps through the
+configured rates against the same store and corpus and headlines the knee.
+
+Results JSON embeds the environment and the full resolved config (credentials
+redacted), so any results file plus its `random_seed` is enough to reproduce
+the run — and enough for `compare` to name exactly which knobs differed
+between two runs.
 
 ## Docker Notes
 
