@@ -102,6 +102,7 @@ type LoadConfig struct {
 	Endpoint      string        `yaml:"endpoint"`       // check | batch-check
 	BatchSize     int           `yaml:"batch_size"`     // for batch-check
 	VerifyResults bool          `yaml:"verify_results"` // compare allowed against probe expectations
+	WriteRate     int           `yaml:"write_rate"`     // background tuple writes/sec during the measured phase; 0 = none
 	Sweep         SweepConfig   `yaml:"sweep"`
 	SLOP99        time.Duration `yaml:"slo_p99"` // optional: a sweep step "passes" only when response-latency p99 is under this
 }
@@ -250,6 +251,9 @@ func (c *Config) validate() error {
 	}
 	if c.Load.Rate < 0 {
 		return fmt.Errorf("load.rate must be >= 0 (0 = closed loop), got %d", c.Load.Rate)
+	}
+	if c.Load.WriteRate < 0 {
+		return fmt.Errorf("load.write_rate must be >= 0, got %d", c.Load.WriteRate)
 	}
 	for _, r := range c.Load.Sweep.Rates {
 		if r <= 0 {

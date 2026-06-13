@@ -157,6 +157,26 @@ func (c *FGAClient) WriteTuples(storeID, modelID string, tuples []TupleKey) erro
 	return c.do("POST", "/stores/"+storeID+"/write", body, nil)
 }
 
+// deleteKey is a tuple key without a condition: the write endpoint rejects
+// conditions on deletes.
+type deleteKey struct {
+	User     string `json:"user"`
+	Relation string `json:"relation"`
+	Object   string `json:"object"`
+}
+
+func (c *FGAClient) DeleteTuples(storeID, modelID string, tuples []TupleKey) error {
+	keys := make([]deleteKey, len(tuples))
+	for i, t := range tuples {
+		keys[i] = deleteKey{User: t.User, Relation: t.Relation, Object: t.Object}
+	}
+	body := map[string]any{
+		"deletes":                map[string]any{"tuple_keys": keys},
+		"authorization_model_id": modelID,
+	}
+	return c.do("POST", "/stores/"+storeID+"/write", body, nil)
+}
+
 type CheckRequest struct {
 	TupleKey             CheckTupleKey        `json:"tuple_key"`
 	ContextualTuples     *ContextualTupleKeys `json:"contextual_tuples,omitempty"`

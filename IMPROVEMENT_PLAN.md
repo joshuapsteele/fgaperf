@@ -323,7 +323,7 @@ durations preserved; `openfga.api_token` redacted when set) and embeds it as
 server version is not recorded. Verified in a live run: `random_seed`, seed
 shape, pools, and load knobs all present in the output JSON.
 
-### 10. Mixed read/write workloads
+### 10. Mixed read/write workloads ✅
 
 **Motivation.** Production OpenFGA serves checks *while* tuples churn, and
 writes invalidate caches; a read-only steady state is the server's best case.
@@ -345,6 +345,26 @@ Currently writes only happen at seed time.
 
 **Accept.** A run with churn enabled shows zero verification mismatches and
 visibly different check latency vs a churn-free run with caching enabled.
+
+**Done (2026-06-12).** `load.write_rate: <tuples/sec>` (default 0) runs a
+dedicated churn goroutine alongside the check workers. The fresh-instances
+design won over delete-then-rewrite: `probe.go` collects `ChurnTemplates`
+from the model — (object type, relation, user type) shapes whose direct ref
+is plain (no userset, no wildcard, no condition) and whose user type is
+terminal when any terminal templates exist — and the churn loop instantiates
+them with nonce-scoped IDs (`type:churn-<nonce>-<seq>`) that no seeded tuple
+or corpus check ever references, so corpus ground truth cannot shift. The
+loop keeps a bounded window of 64 live tuples, deleting the oldest once full
+so both write and delete invalidation paths churn; `DeleteTuples` strips
+conditions (the write endpoint rejects them on deletes). Measured-phase
+write/delete latencies are reported as a "Background tuple writes" row in
+the findings table, a "Background churn" config row, and an annotation that
+check stats include the write traffic; if the model has no safe template the
+run warns and disables churn rather than failing. Verified end-to-end:
+`write_rate: 50` over an 8s measured window produced 400 write/delete calls,
+zero verification mismatches, and write p99 reported alongside check stats;
+`go test -race ./...` passes with a unit test asserting templates are plain
+and terminal-preferred against the example model.
 
 ### 11. Per-target workload weights ✅
 

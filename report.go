@@ -43,6 +43,8 @@ type Report struct {
 	ErrorsByClass   map[string]int64 `json:"errors_by_class,omitempty"`
 	ErrorSamples    []string         `json:"error_samples,omitempty"`
 	Server          *ServerMetrics   `json:"server,omitempty"` // diffed Prometheus view of the measured phase
+	WriteRate       int              `json:"write_rate,omitempty"` // background churn writes/sec; 0 = none
+	WriteChurn      *Stats           `json:"write_churn,omitempty"`
 	Sweep           []SweepStep      `json:"sweep,omitempty"`
 	SweepKneeRate   int              `json:"sweep_knee_rate,omitempty"` // highest non-saturated, SLO-passing step; 0 = none
 	SLOP99          string           `json:"slo_p99,omitempty"`
@@ -213,6 +215,11 @@ func BuildReport(res *LoadResult, corpus *Corpus, cfg *Config, tupleCount int, s
 		rl := SummarizeResponse(res.Samples)
 		r.ResponseLatency = &rl
 	}
+	if res.WriteRate > 0 {
+		r.WriteRate = res.WriteRate
+		ws := res.WriteStats
+		r.WriteChurn = &ws
+	}
 	return r
 }
 
@@ -272,6 +279,9 @@ func (r *Report) Markdown() string {
 	} else {
 		w("| Offered rate | closed loop |")
 	}
+	if r.WriteRate > 0 {
+		w("| Background churn | %d tuple writes/sec |", r.WriteRate)
+	}
 	w("| Warmup / measured | %s / %s (actual window %s) |", r.Warmup, r.Duration, r.MeasuredWindow)
 	w("| Seeded tuples | %d |", r.TupleCount)
 	w("| Check corpus | %d entries (%d distinct checks) |", r.CorpusSize, r.CorpusDistinct)
@@ -322,7 +332,15 @@ func (r *Report) Markdown() string {
 	row("Unconditioned paths", r.Unconditioned)
 	row("With contextual tuples", r.Contextual)
 	row("Without contextual tuples", r.NoContextual)
+	if r.WriteChurn != nil {
+		row("Background tuple writes", *r.WriteChurn)
+	}
 	w("")
+	if r.WriteChurn != nil {
+		w("All check populations above were measured while %d tuple writes/sec of background churn ran against the store, so they include any cache-invalidation cost that write traffic imposes. The \"background tuple writes\" row is the latency of those write/delete calls themselves (%d errors).",
+			r.WriteRate, r.WriteChurn.Errors)
+		w("")
+	}
 	if r.ResponseLatency != nil {
 		w("All rows except \"response latency\" measure service latency (request start to response). Response latency measures from each request's scheduled send time under the offered rate, so it additionally captures time spent waiting for a free worker — the coordinated-omission-corrected view.")
 		w("")

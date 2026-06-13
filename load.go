@@ -51,6 +51,75 @@ type LoadResult struct {
 	ErrorSamples    []string       // first few verbatim error strings from the measured phase
 	Server          *ServerMetrics // diffed Prometheus view of the measured phase; nil when not scraped
 	MismatchRecords []MismatchRecord
+	WriteRate       int   // configured background churn writes/sec; 0 = none
+	WriteStats      Stats // latency of measured-phase churn writes/deletes
+}
+
+// runChurn issues background tuple writes (and deletes of its own earlier
+// writes) at writeRate until deadline, instantiating churn templates with
+// fresh nonce-scoped instance IDs. It returns latency samples from the
+// measured phase. A dedicated goroutine, not the check workers: write
+// latency must not occupy check-worker slots.
+func runChurn(client *FGAClient, corpus *Corpus, cfg *Config, start, warmupEnd, deadline time.Time) []Sample {
+	templates := corpus.ChurnTemplates
+	rng := rand.New(rand.NewSource(cfg.RandomSeed + 999983))
+	nonce := time.Now().UnixNano() % 1_000_000 // distinct IDs across runs against the same store
+	interval := time.Second / time.Duration(cfg.Load.WriteRate)
+	var samples []Sample
+	var outstanding []TupleKey
+	var timer *time.Timer
+	seq := 0
+	for n := int64(0); ; n++ {
+		intended := start.Add(time.Duration(n) * interval)
+		if !intended.Before(deadline) {
+			return samples
+		}
+		if d := time.Until(intended); d > 0 {
+			if timer == nil {
+				timer = time.NewTimer(d)
+			} else {
+				timer.Reset(d)
+			}
+			<-timer.C
+		}
+		var op string
+		var tuple TupleKey
+		// Keep a bounded set of live churn tuples: delete the oldest once the
+		// window fills, so both write and delete invalidation paths churn.
+		if len(outstanding) >= 64 {
+			op, tuple = "delete", outstanding[0]
+			outstanding = outstanding[1:]
+		} else {
+			tpl := templates[rng.Intn(len(templates))]
+			tuple = TupleKey{
+				User:     fmt.Sprintf("%s:churn-%d-%d", tpl.UserType, nonce, seq),
+				Relation: tpl.Relation,
+				Object:   fmt.Sprintf("%s:churn-%d-%d", tpl.ObjectType, nonce, seq),
+			}
+			op = "write"
+			seq++
+		}
+		t0 := time.Now()
+		var err error
+		if op == "write" {
+			err = client.WriteTuples(corpus.StoreID, corpus.ModelID, []TupleKey{tuple})
+			if err == nil {
+				outstanding = append(outstanding, tuple)
+			}
+		} else {
+			err = client.DeleteTuples(corpus.StoreID, corpus.ModelID, []TupleKey{tuple})
+		}
+		completed := time.Now()
+		if completed.After(warmupEnd) {
+			s := Sample{Target: "churn-" + op, Latency: completed.Sub(t0), Completed: completed, Items: 1}
+			if err != nil {
+				s.Err = true
+				s.ErrClass = classifyErr(err)
+				s.ErrMsg = err.Error()
+			}
+			samples = append(samples, s)
+		}
+	}
 }
 
 const (
@@ -243,6 +312,20 @@ func RunLoad(client *FGAClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 		}()
 	}
 
+	var churnSamples []Sample
+	churnDone := make(chan struct{})
+	if lc.WriteRate > 0 && len(corpus.ChurnTemplates) == 0 {
+		fmt.Fprintln(os.Stderr, "load: write_rate is set but the corpus has no churn templates (no relation accepts a plain unconditioned user type); churn disabled")
+	}
+	if lc.WriteRate > 0 && len(corpus.ChurnTemplates) > 0 {
+		go func() {
+			churnSamples = runChurn(client, corpus, cfg, start, warmupEnd, deadline)
+			close(churnDone)
+		}()
+	} else {
+		close(churnDone)
+	}
+
 	var wg sync.WaitGroup
 	sampleCh := make(chan Sample, 4096)
 	var errCount, checks, mismatches int64
@@ -312,6 +395,11 @@ func RunLoad(client *FGAClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 		res.Samples = append(res.Samples, s)
 	}
 	<-done
+	<-churnDone // before the after-snapshot so churn writes land inside the server-side diff
+	if len(churnSamples) > 0 {
+		res.WriteRate = lc.WriteRate
+		res.WriteStats = Summarize(churnSamples)
+	}
 	if scraper != nil {
 		if after, err := scraper.Snapshot(); err != nil {
 			fmt.Fprintf(os.Stderr, "metrics: snapshot at measured-phase end failed, skipping server-side view: %v\n", err)

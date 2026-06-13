@@ -181,3 +181,30 @@ func TestContextualTuplesPreferSeededRelatedObject(t *testing.T) {
 		t.Fatalf("contextual tuple did not use seeded related customer: %+v", tuples[0])
 	}
 }
+
+func TestChurnTemplatesArePlainAndPreferTerminal(t *testing.T) {
+	a := loadExampleModel(t)
+	templates := churnTemplates(a)
+	if len(templates) == 0 {
+		t.Fatal("example model produced no churn templates; it has plain user-type relations")
+	}
+	for _, tpl := range templates {
+		// Every template must correspond to a direct ref that is plain: no
+		// userset, no wildcard, no condition. Anything else could make churn
+		// tuples reachable from corpus checks and shift ground truth.
+		found := false
+		for _, ref := range a.DirectRefs[tpl.ObjectType][tpl.Relation] {
+			if ref.Type == tpl.UserType && ref.Relation == "" && ref.Wildcard == nil && ref.Condition == "" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("template %+v does not match a plain direct ref in the model", tpl)
+		}
+		// The example model's only terminal subject type is "user", and it has
+		// plain user refs, so the terminal-preferred branch must win.
+		if tpl.UserType != "user" {
+			t.Errorf("template %+v: want terminal user type %q, got %q", tpl, "user", tpl.UserType)
+		}
+	}
+}

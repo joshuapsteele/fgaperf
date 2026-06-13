@@ -34,7 +34,50 @@ type Corpus struct {
 	ModelID string                       `json:"model_id"`
 	Stats   map[string]CorpusTargetStats `json:"target_stats,omitempty"`
 	Weights map[string]float64           `json:"weights,omitempty"` // load traffic share per target; absent = uniform over entries
-	Entries []CorpusEntry                `json:"entries"`
+	// ChurnTemplates are (object type, relation, user type) shapes for
+	// background-write churn (load.write_rate). Derived from the model at
+	// probe time because `run` never loads the model.
+	ChurnTemplates []ChurnTemplate `json:"churn_templates,omitempty"`
+	Entries        []CorpusEntry   `json:"entries"`
+}
+
+// ChurnTemplate is a relation shape safe for background churn: it accepts a
+// plain (non-userset, non-wildcard) user type with no condition. Churn tuples
+// instantiate these with fresh churn-only instance IDs, so they are
+// unreachable from every corpus check: no wildcard can pull other subjects
+// in, and no seeded object ever references a churn instance — corpus ground
+// truth cannot shift, keeping verify_results meaningful.
+type ChurnTemplate struct {
+	ObjectType string `json:"object_type"`
+	Relation   string `json:"relation"`
+	UserType   string `json:"user_type"`
+}
+
+// churnTemplates collects safe churn shapes, preferring terminal subject
+// types when any exist.
+func churnTemplates(a *Analysis) []ChurnTemplate {
+	terminal := map[string]bool{}
+	for _, t := range a.SubjectTypes {
+		terminal[t] = true
+	}
+	var preferred, fallback []ChurnTemplate
+	for _, tr := range a.AllRelations {
+		for _, ref := range a.DirectRefs[tr.Type][tr.Relation] {
+			if ref.Relation != "" || ref.Wildcard != nil || ref.Condition != "" {
+				continue
+			}
+			t := ChurnTemplate{ObjectType: tr.Type, Relation: tr.Relation, UserType: ref.Type}
+			if terminal[ref.Type] {
+				preferred = append(preferred, t)
+			} else {
+				fallback = append(fallback, t)
+			}
+		}
+	}
+	if len(preferred) > 0 {
+		return preferred
+	}
+	return fallback
 }
 
 // CorpusTargetStats records how much resampling duplicated a target's entries.
@@ -206,6 +249,7 @@ func BuildCorpus(client *FGAClient, a *Analysis, w *World, cfg *Config, storeID,
 	if weighted {
 		c.Weights = weights
 	}
+	c.ChurnTemplates = churnTemplates(a)
 	return c, nil
 }
 

@@ -295,6 +295,10 @@ func run(client *FGAClient, cfg *Config, st *State) error {
 		fmt.Printf("achieved rate: %.0f req/s of %d offered (%d slots dropped) | response-latency p99 %sms\n",
 			report.AchievedRate, report.OfferedRate, report.DroppedSlots, ms(report.ResponseLatency.P99))
 	}
+	if report.WriteChurn != nil {
+		fmt.Printf("churn: %d writes/sec offered | %d write/delete calls | write p99 %sms | errors %d\n",
+			report.WriteRate, report.WriteChurn.Count+report.WriteChurn.Errors, ms(report.WriteChurn.P99), report.WriteChurn.Errors)
+	}
 	if report.Server != nil && report.Server.DatastoreQueryCount.Count > 0 {
 		fmt.Printf("server: %.2f datastore queries/request | server-side p99 %.2fms\n",
 			report.Server.DatastoreQueryCount.Mean, report.Server.RequestDuration.P99)
