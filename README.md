@@ -250,6 +250,12 @@ redacted), so any results file plus its `random_seed` is enough to reproduce
 the run — and enough for `compare` to name exactly which knobs differed
 between two runs.
 
+For the measurement theory behind all of this — when closed-loop and fixed-rate
+each mislead you, what coordinated omission is and how fgaperf corrects for it,
+how warmup and corpus uniqueness interact with caching, and why a clean
+comparison changes one variable at a time — see
+[docs/methodology.md](docs/methodology.md).
+
 ## Docker Notes
 
 The included `docker-compose.yaml` starts Postgres and OpenFGA v1.17.1 on:

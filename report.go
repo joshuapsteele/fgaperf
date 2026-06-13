@@ -606,6 +606,8 @@ func (r *Report) Markdown() string {
 		w("")
 	}
 	w("Latencies include client-side HTTP and JSON overhead, which is the number a calling service would actually observe. Results depend heavily on the datastore behind OpenFGA, its cache configuration, and co-location of client and server; record those alongside these numbers. The conditioned/unconditioned split is computed statically from the model (whether any tuple on the resolution path can carry a condition), not from per-request traces. Repeat runs with different random_seed values to confirm stability before drawing conclusions.")
+	w("")
+	w("For the measurement pitfalls behind these caveats — closed-loop vs fixed-rate, coordinated omission, warmup and cache fill-in, corpus uniqueness, and why probing and load can legitimately disagree — see the [benchmarking methodology](https://github.com/joshuapsteele/fgaperf/blob/main/docs/methodology.md) page.")
 	return b.String()
 }
 

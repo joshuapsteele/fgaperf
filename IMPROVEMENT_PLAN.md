@@ -579,7 +579,7 @@ seed-once-then-`pg_dump`/restore workflow for repeated large-scale runs.
 - Run the race detector (`go test -race`) — the load path is concurrent.
 **Files:** `.github/workflows/ci.yaml`, `examples/`, `report_test.go` (new).
 
-### 22. Docs: a short benchmarking-methodology page
+### 22. Docs: a short benchmarking-methodology page ✅
 
 A `docs/methodology.md` covering: closed-loop vs fixed-rate (when each lies to
 you), coordinated omission, warmup and cache-fill, corpus uniqueness vs query
@@ -587,6 +587,16 @@ caching, why `HIGHER_CONSISTENCY` probing + `MINIMIZE_LATENCY` load can
 legitimately mismatch, client/server co-location, and "change one variable per
 run". Link it from the findings doc's caveats section. **Files:** `docs/`,
 `report.go`, README.
+
+**Done (2026-06-13).** `docs/methodology.md` covers all eight topics, each
+cross-referenced to the specific fgaperf feature that addresses it (the
+service-vs-response-latency split for coordinated omission, the Latency-over-time
+section for warmup adequacy, `probe.max_duplication` for corpus uniqueness,
+`compare` + `random_seed` for one-variable-at-a-time). The findings doc's
+caveats section links to it (absolute GitHub URL, since findings docs travel
+away from the repo), and the README links it from the closed-loop/fixed-rate
+discussion. Uses only example-model/generic terms — no leaked entitlement
+vocabulary. Verified the link renders in a fresh findings doc.
 
 ---
 
