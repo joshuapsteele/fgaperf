@@ -99,13 +99,27 @@ func (t *TargetSpec) UnmarshalYAML(node *yaml.Node) error {
 		t.Weight = 1
 		return nil
 	}
-	type plain TargetSpec // dodge recursive UnmarshalYAML
-	var p plain
-	if err := node.Decode(&p); err != nil {
-		return err
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("probe target must be a relation string or mapping")
 	}
-	*t = TargetSpec(p)
-	if t.Weight == 0 {
+	var weightSet bool
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key, val := node.Content[i], node.Content[i+1]
+		switch key.Value {
+		case "relation":
+			if err := val.Decode(&t.Relation); err != nil {
+				return err
+			}
+		case "weight":
+			weightSet = true
+			if err := val.Decode(&t.Weight); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("field %s not found in type main.TargetSpec", key.Value)
+		}
+	}
+	if !weightSet {
 		t.Weight = 1
 	}
 	return nil
@@ -336,7 +350,7 @@ func (c *Config) validate() error {
 		if !isTypeRelation(t.Relation) {
 			return fmt.Errorf("probe.targets entry %q must be of the form type#relation", t.Relation)
 		}
-		if t.Weight < 0 {
+		if t.Weight <= 0 {
 			return fmt.Errorf("probe.targets weight for %q must be positive, got %v", t.Relation, t.Weight)
 		}
 	}

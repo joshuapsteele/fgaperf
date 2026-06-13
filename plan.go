@@ -56,7 +56,9 @@ func planTupleCounts(a *Analysis, cfg *Config) map[string]int {
 			total := 0
 			for _, ref := range refs {
 				if ref.Wildcard != nil {
-					total += int(float64(objs) * wp) // ~one wildcard tuple per object, with probability wp
+					if wp > 0 {
+						total += objs // upper bound: any object may emit its wildcard tuple
+					}
 					continue
 				}
 				fanout := relFanout
@@ -169,10 +171,14 @@ func planWarnings(a *Analysis, cfg *Config) []string {
 	if len(a.SubjectTypes) == 0 && len(cfg.Probe.SubjectTypes) == 0 {
 		warnings = append(warnings, "no terminal subject types were inferred; set probe.subject_types explicitly")
 	}
+	inst := planInstanceCounts(a, cfg)
 	for _, t := range targets {
 		typ, rel, ok := strings.Cut(t.Relation, "#")
 		if !ok {
 			continue
+		}
+		if inst[typ] == 0 {
+			warnings = append(warnings, fmt.Sprintf("probe target %s has zero configured %s instances; probe is likely to produce no entries", t.Relation, typ))
 		}
 		if !relationHasAssignablePath(a, typ, rel, map[string]bool{}) {
 			warnings = append(warnings, fmt.Sprintf("probe target %s has no reachable direct tuple path; probe is likely to produce only denied or empty entries", t.Relation))
@@ -186,10 +192,8 @@ func relationHasAssignablePath(a *Analysis, typ, rel string, seen map[string]boo
 	if seen[key] {
 		return false
 	}
-	seen[key] = true
-	if len(a.DirectRefs[typ][rel]) > 0 {
-		return true
-	}
+	nextSeen := copySeen(seen)
+	nextSeen[key] = true
 	td := a.TypeDefs[typ]
 	if td == nil {
 		return false
@@ -198,41 +202,56 @@ func relationHasAssignablePath(a *Analysis, typ, rel string, seen map[string]boo
 	if !ok {
 		return false
 	}
-	return usersetHasAssignablePath(a, typ, &us, seen)
+	return usersetHasAssignablePath(a, typ, rel, &us, nextSeen)
 }
 
-func usersetHasAssignablePath(a *Analysis, typ string, us *Userset, seen map[string]bool) bool {
+func usersetHasAssignablePath(a *Analysis, typ, rel string, us *Userset, seen map[string]bool) bool {
 	switch {
 	case us.This != nil:
-		return false
+		return len(a.DirectRefs[typ][rel]) > 0
 	case us.ComputedUserset != nil:
 		return relationHasAssignablePath(a, typ, us.ComputedUserset.Relation, seen)
 	case us.TupleToUserset != nil:
-		if relationHasAssignablePath(a, typ, us.TupleToUserset.Tupleset.Relation, seen) {
-			return true
+		tupleset := us.TupleToUserset.Tupleset.Relation
+		if !relationHasAssignablePath(a, typ, tupleset, seen) {
+			return false
 		}
-		for _, ref := range a.DirectRefs[typ][us.TupleToUserset.Tupleset.Relation] {
+		for _, ref := range a.DirectRefs[typ][tupleset] {
+			if ref.Wildcard != nil {
+				continue
+			}
 			if relationHasAssignablePath(a, ref.Type, us.TupleToUserset.ComputedUserset.Relation, seen) {
 				return true
 			}
 		}
 	case us.Union != nil:
 		for i := range us.Union.Child {
-			if usersetHasAssignablePath(a, typ, &us.Union.Child[i], seen) {
+			if usersetHasAssignablePath(a, typ, rel, &us.Union.Child[i], seen) {
 				return true
 			}
 		}
 	case us.Intersection != nil:
+		if len(us.Intersection.Child) == 0 {
+			return false
+		}
 		for i := range us.Intersection.Child {
-			if usersetHasAssignablePath(a, typ, &us.Intersection.Child[i], seen) {
-				return true
+			if !usersetHasAssignablePath(a, typ, rel, &us.Intersection.Child[i], seen) {
+				return false
 			}
 		}
+		return true
 	case us.Difference != nil:
-		return usersetHasAssignablePath(a, typ, &us.Difference.Base, seen) ||
-			usersetHasAssignablePath(a, typ, &us.Difference.Subtract, seen)
+		return usersetHasAssignablePath(a, typ, rel, &us.Difference.Base, seen)
 	}
 	return false
+}
+
+func copySeen(seen map[string]bool) map[string]bool {
+	out := make(map[string]bool, len(seen)+1)
+	for k, v := range seen {
+		out[k] = v
+	}
+	return out
 }
 
 func timeMul(d time.Duration, n int) time.Duration {

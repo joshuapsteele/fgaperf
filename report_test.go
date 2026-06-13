@@ -215,6 +215,12 @@ func TestBuildTimeline(t *testing.T) {
 			Items:     2,
 		})
 	}
+	samples = append(samples, Sample{
+		Completed: base.Add(100 * time.Millisecond),
+		Latency:   50 * time.Millisecond,
+		Items:     1,
+		Err:       true,
+	})
 	tl := buildTimeline(samples)
 	if len(tl) != 15 {
 		t.Fatalf("got %d buckets, want 15", len(tl))
@@ -225,9 +231,15 @@ func TestBuildTimeline(t *testing.T) {
 	if tl[0].Offset != "t+0s" {
 		t.Errorf("offset label: %q", tl[0].Offset)
 	}
-	// Each 1s bucket holds one 2-item sample => throughput 2/s.
-	if tl[0].Throughput != 2 {
-		t.Errorf("throughput = %v, want 2", tl[0].Throughput)
+	if tl[0].Requests != 2 {
+		t.Errorf("requests = %d, want 2 including errored samples", tl[0].Requests)
+	}
+	if tl[0].Errors != 1 {
+		t.Errorf("errors = %d, want 1", tl[0].Errors)
+	}
+	// The first 1s bucket holds one 2-item success and one 1-item error.
+	if tl[0].Throughput != 3 {
+		t.Errorf("throughput = %v, want 3", tl[0].Throughput)
 	}
 	// p99 should climb across buckets (latency increases with time).
 	if tl[14].P99 <= tl[0].P99 {
@@ -235,5 +247,35 @@ func TestBuildTimeline(t *testing.T) {
 	}
 	if buildTimeline(nil) != nil {
 		t.Error("empty samples should produce a nil timeline")
+	}
+}
+
+func TestReportSaveDoesNotOverwriteSameTimestamp(t *testing.T) {
+	dir := t.TempDir()
+	r1 := fixedReport()
+	r1.mismatchRecords = []MismatchRecord{{User: "user:1", Relation: "viewer", Object: "document:1"}}
+	json1, md1, err := r1.Save(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mm1 := r1.MismatchFile
+
+	r2 := fixedReport()
+	r2.mismatchRecords = []MismatchRecord{{User: "user:2", Relation: "viewer", Object: "document:2"}}
+	json2, md2, err := r2.Save(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mm2 := r2.MismatchFile
+
+	for _, pair := range [][2]string{{json1, json2}, {md1, md2}, {mm1, mm2}} {
+		if pair[0] == pair[1] {
+			t.Fatalf("artifact path reused: %s", pair[0])
+		}
+		for _, path := range pair {
+			if _, err := os.Stat(path); err != nil {
+				t.Fatalf("artifact %s missing: %v", path, err)
+			}
+		}
 	}
 }

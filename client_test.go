@@ -184,3 +184,50 @@ func TestOIDCTokenError(t *testing.T) {
 		t.Errorf("expected an OIDC auth error, got %v", err)
 	}
 }
+
+func TestOIDCExpiredTokenNotReusedAfterRefreshFailure(t *testing.T) {
+	tokenCalls := 0
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tokenCalls++
+		w.Header().Set("Content-Type", "application/json")
+		if tokenCalls == 1 {
+			fmt.Fprint(w, `{"access_token":"old","expires_in":1,"token_type":"Bearer"}`)
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprint(w, `{"error":"temporarily_unavailable"}`)
+	}))
+	defer tokenSrv.Close()
+
+	apiCalls := 0
+	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apiCalls++
+		t.Errorf("API should not be called with expired token; got auth %q", r.Header.Get("Authorization"))
+		fmt.Fprint(w, `{"allowed":true}`)
+	}))
+	defer apiSrv.Close()
+
+	ts := &tokenSource{
+		cfg:  OIDCConfig{TokenURL: tokenSrv.URL, ClientID: "id", ClientSecret: "secret"},
+		http: tokenSrv.Client(),
+	}
+	ts.refresh()
+	if tok, err := ts.token(); err != nil || tok != "old" {
+		t.Fatalf("initial token = %q, %v; want old token", tok, err)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	ts.refresh()
+
+	client := &FGAClient{
+		baseURL: apiSrv.URL,
+		ts:      ts,
+		http:    apiSrv.Client(),
+	}
+	_, err := client.Check("store", CheckRequest{})
+	if err == nil || !strings.Contains(err.Error(), "OIDC auth") || !strings.Contains(err.Error(), "HTTP 500") {
+		t.Fatalf("expired token should surface refresh failure, got %v", err)
+	}
+	if apiCalls != 0 {
+		t.Fatalf("API was called %d time(s) with an expired token", apiCalls)
+	}
+}

@@ -224,6 +224,10 @@ func CompareMarkdown(pathA, pathB string, a, b *Report) string {
 }
 
 func compare(pathA, pathB, outDir string) error {
+	return compareAt(pathA, pathB, outDir, time.Now().UTC())
+}
+
+func compareAt(pathA, pathB, outDir string, generatedAt time.Time) error {
 	a, err := LoadReport(pathA)
 	if err != nil {
 		return err
@@ -236,10 +240,13 @@ func compare(pathA, pathB, outDir string) error {
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return err
 	}
-	out := filepath.Join(outDir, "compare-"+time.Now().UTC().Format("20060102-150405")+".md")
-	if err := os.WriteFile(out, []byte(md), 0o644); err != nil {
+	artifacts, err := createArtifactSet(outDir, generatedAt.Format("20060102-150405"), []string{"compare-%s.md"})
+	if err != nil {
 		return err
 	}
-	fmt.Printf("wrote %s\n", out)
+	if err := writeArtifacts(artifacts, [][]byte{[]byte(md)}); err != nil {
+		return err
+	}
+	fmt.Printf("wrote %s\n", artifacts[0].path)
 	return nil
 }

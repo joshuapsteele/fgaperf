@@ -185,7 +185,7 @@ func buildTimeline(samples []Sample) []TimelineBucket {
 		out = append(out, TimelineBucket{
 			Offset:     fmt.Sprintf("t+%ds", sec),
 			OffsetSec:  sec,
-			Requests:   st.Count,
+			Requests:   len(buckets[i]),
 			Throughput: float64(st.Items) / width.Seconds(),
 			P50:        st.P50,
 			P99:        st.P99,
@@ -359,30 +359,95 @@ func (r *Report) Save(dir string) (string, string, error) {
 		return "", "", err
 	}
 	stamp := r.GeneratedAt.Format("20060102-150405")
-	jsonPath := filepath.Join(dir, "results-"+stamp+".json")
-	mdPath := filepath.Join(dir, "findings-"+stamp+".md")
+	patterns := []string{"results-%s.json", "findings-%s.md"}
+	var mmData []byte
 	if len(r.mismatchRecords) > 0 {
-		mmPath := filepath.Join(dir, "mismatches-"+stamp+".json")
-		mmData, err := json.MarshalIndent(r.mismatchRecords, "", " ")
+		var err error
+		mmData, err = json.MarshalIndent(r.mismatchRecords, "", " ")
 		if err != nil {
 			return "", "", err
 		}
-		if err := os.WriteFile(mmPath, mmData, 0o644); err != nil {
-			return "", "", err
-		}
-		r.MismatchFile = mmPath // recorded in results JSON and findings doc below
+		patterns = append(patterns, "mismatches-%s.json")
 	}
-	data, err := json.MarshalIndent(r, "", " ")
+	artifacts, err := createArtifactSet(dir, stamp, patterns)
 	if err != nil {
 		return "", "", err
 	}
-	if err := os.WriteFile(jsonPath, data, 0o644); err != nil {
+	if len(mmData) > 0 {
+		r.MismatchFile = artifacts[2].path // recorded in results JSON and findings doc below
+	}
+	data, err := json.MarshalIndent(r, "", " ")
+	if err != nil {
+		cleanupArtifacts(artifacts)
 		return "", "", err
 	}
-	if err := os.WriteFile(mdPath, []byte(r.Markdown()), 0o644); err != nil {
+	payloads := [][]byte{data, []byte(r.Markdown())}
+	if len(mmData) > 0 {
+		payloads = append(payloads, mmData)
+	}
+	if err := writeArtifacts(artifacts, payloads); err != nil {
 		return "", "", err
 	}
-	return jsonPath, mdPath, nil
+	return artifacts[0].path, artifacts[1].path, nil
+}
+
+type artifactFile struct {
+	path string
+	file *os.File
+}
+
+func createArtifactSet(dir, stamp string, patterns []string) ([]artifactFile, error) {
+	for n := 0; ; n++ {
+		suffix := stamp
+		if n > 0 {
+			suffix = fmt.Sprintf("%s-%d", stamp, n+1)
+		}
+		artifacts := make([]artifactFile, 0, len(patterns))
+		collided := false
+		for _, pattern := range patterns {
+			path := filepath.Join(dir, fmt.Sprintf(pattern, suffix))
+			f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+			if os.IsExist(err) {
+				collided = true
+				break
+			}
+			if err != nil {
+				cleanupArtifacts(artifacts)
+				return nil, err
+			}
+			artifacts = append(artifacts, artifactFile{path: path, file: f})
+		}
+		if collided {
+			cleanupArtifacts(artifacts)
+			continue
+		}
+		return artifacts, nil
+	}
+}
+
+func writeArtifacts(artifacts []artifactFile, payloads [][]byte) error {
+	for i := range artifacts {
+		if _, err := artifacts[i].file.Write(payloads[i]); err != nil {
+			cleanupArtifacts(artifacts)
+			return err
+		}
+		if err := artifacts[i].file.Close(); err != nil {
+			artifacts[i].file = nil
+			cleanupArtifacts(artifacts)
+			return err
+		}
+		artifacts[i].file = nil
+	}
+	return nil
+}
+
+func cleanupArtifacts(artifacts []artifactFile) {
+	for _, artifact := range artifacts {
+		if artifact.file != nil {
+			artifact.file.Close()
+		}
+		os.Remove(artifact.path)
+	}
 }
 
 func ms(d time.Duration) string {

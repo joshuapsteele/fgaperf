@@ -1,6 +1,9 @@
 package main
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -85,6 +88,38 @@ func TestCompareMarkdownCaveatsIncomparableRuns(t *testing.T) {
 		if !strings.Contains(md, want) {
 			t.Errorf("compare markdown missing caveat %q:\n%s", want, md)
 		}
+	}
+}
+
+func TestCompareArtifactsDoNotOverwriteSameTimestamp(t *testing.T) {
+	dir := t.TempDir()
+	reportA := filepath.Join(dir, "a.json")
+	reportB := filepath.Join(dir, "b.json")
+	data, err := json.Marshal(sampleReport())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(reportA, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(reportB, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	generatedAt := time.Date(2026, 1, 2, 15, 4, 5, 0, time.UTC)
+	if err := compareAt(reportA, reportB, dir, generatedAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := compareAt(reportA, reportB, dir, generatedAt); err != nil {
+		t.Fatal(err)
+	}
+	first := filepath.Join(dir, "compare-20260102-150405.md")
+	second := filepath.Join(dir, "compare-20260102-150405-2.md")
+	if _, err := os.Stat(first); err != nil {
+		t.Fatalf("first compare artifact missing: %v", err)
+	}
+	if _, err := os.Stat(second); err != nil {
+		t.Fatalf("second compare artifact missing: %v", err)
 	}
 }
 

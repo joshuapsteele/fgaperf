@@ -154,7 +154,9 @@ func main() {
 		}
 	}
 
-	client := NewFGAClient(cfg.OpenFGA, cfg.Load.Concurrency)
+	newClient := func() *FGAClient {
+		return NewFGAClient(cfg.OpenFGA, cfg.Load.Concurrency)
+	}
 
 	switch cmd {
 	case "inspect":
@@ -168,20 +170,20 @@ func main() {
 	case "validate":
 		validateOnly(analysis, cfg)
 	case "setup":
-		_, err := setup(client, analysis, cfg, *resume)
+		_, err := setup(newClient(), analysis, cfg, *resume)
 		checkWithConfig(err, cfg)
 	case "probe":
 		st, err := loadState(cfg)
 		checkWithConfig(err, cfg)
-		checkWithConfig(probe(client, analysis, cfg, st), cfg)
+		checkWithConfig(probe(newClient(), analysis, cfg, st), cfg)
 	case "run":
 		st, err := loadState(cfg)
 		checkWithConfig(err, cfg)
-		checkWithConfig(run(client, cfg, st), cfg)
+		checkWithConfig(run(newClient(), cfg, st), cfg)
 	case "all":
-		checkWithConfig(runAll(client, analysis, cfg, *keep || cfg.KeepStore), cfg)
+		checkWithConfig(runAll(newClient(), analysis, cfg, *keep || cfg.KeepStore), cfg)
 	case "cleanup":
-		checkWithConfig(cleanup(client, cfg, *allStores), cfg)
+		checkWithConfig(cleanup(newClient(), cfg, *allStores), cfg)
 	case "compare":
 		args := fs.Args()
 		if len(args) != 2 {

@@ -75,6 +75,12 @@ func (ts *tokenSource) token() (string, error) {
 		}
 		return "", fmt.Errorf("OIDC token not yet available")
 	}
+	if !ts.exp.IsZero() && !time.Now().Before(ts.exp) {
+		if ts.err != nil {
+			return "", ts.err
+		}
+		return "", fmt.Errorf("OIDC token expired at %s", ts.exp.Format(time.RFC3339))
+	}
 	return ts.tok, nil
 }
 

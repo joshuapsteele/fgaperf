@@ -112,6 +112,17 @@ func TestConfigRejectsUnknownKeys(t *testing.T) {
 			t.Fatalf("unknown-key error was not actionable: %v", err)
 		}
 	}
+
+	path = filepath.Join(t.TempDir(), "target.yaml")
+	yaml = "probe:\n  targets:\n    - relation: document#viewer\n      weigth: 8\n"
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfigFile(path); err == nil {
+		t.Fatal("target with unknown key weigth loaded without error")
+	} else if !strings.Contains(err.Error(), "weigth") {
+		t.Fatalf("target unknown-key error did not name typo: %v", err)
+	}
 }
 
 func TestConfigValidation(t *testing.T) {
@@ -122,6 +133,7 @@ func TestConfigValidation(t *testing.T) {
 		"bad allowed_ratio":          "probe:\n  allowed_ratio: 2\n",
 		"bad fanout key":             "seed:\n  fanout:\n    notarelation: 3\n",
 		"bad target key":             "probe:\n  targets: [document]\n",
+		"zero target weight":         "probe:\n  targets:\n    - relation: document#viewer\n      weight: 0\n",
 		"bad contextual key":         "contextual:\n  relations: [viewer]\n",
 		"missing pool":               "conditions:\n  has_scope:\n    params:\n      scopes: {pool: nope}\n",
 		"negative rate":              "load:\n  rate: -5\n",
