@@ -594,7 +594,7 @@ func analysisHasWildcards(a *Analysis) bool {
 func guessContextualRelations(a *Analysis) []string {
 	var out []string
 	for _, tr := range a.AllRelations {
-		if contextualNameRE.MatchString(tr.Relation) {
+		if contextualNameRE.MatchString(tr.Relation) && hasPlainDirectRef(a.DirectRefs[tr.Type][tr.Relation]) {
 			out = append(out, tr.Key())
 		}
 	}

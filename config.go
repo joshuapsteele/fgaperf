@@ -528,6 +528,14 @@ func (c *Config) validateAgainstModel(a *Analysis) error {
 		if !relations[k] {
 			return fmt.Errorf("contextual.relations names relation %q, which is not in the model", k)
 		}
+		typ, relName, _ := strings.Cut(k, "#")
+		refs := a.DirectRefs[typ][relName]
+		if len(refs) == 0 {
+			return fmt.Errorf("contextual.relations names relation %q, which does not accept direct tuples; use the direct relation that carries the request-local fact, not the computed relation that depends on it", k)
+		}
+		if !hasPlainDirectRef(refs) {
+			return fmt.Errorf("contextual.relations names relation %q, which does not accept plain direct user tuples", k)
+		}
 	}
 	for _, t := range c.Probe.Targets {
 		if !relations[t.Relation] {

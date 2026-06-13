@@ -104,6 +104,15 @@ type TypeRelation struct {
 
 func (tr TypeRelation) Key() string { return tr.Type + "#" + tr.Relation }
 
+func hasPlainDirectRef(refs []RelationReference) bool {
+	for _, ref := range refs {
+		if ref.Relation == "" && ref.Wildcard == nil {
+			return true
+		}
+	}
+	return false
+}
+
 func LoadModel(path string) (*Analysis, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {

@@ -130,6 +130,25 @@ func TestGenerateConfigListsRelationFanoutCandidates(t *testing.T) {
 	}
 }
 
+func TestGenerateConfigDoesNotGuessComputedContextualRelations(t *testing.T) {
+	a, err := LoadModel("examples/model.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.AllRelations = append(a.AllRelations, TypeRelation{Type: "document", Relation: "current_viewer"})
+	a.TypeDefs["document"].Relations["current_viewer"] = Userset{
+		ComputedUserset: &ObjectRelation{Relation: "viewer"},
+	}
+
+	guesses := guessContextualRelations(a)
+	if contains(guesses, "document#current_viewer") {
+		t.Fatalf("computed-only relation was guessed as contextual: %v", guesses)
+	}
+	if !contains(guesses, "document#active_context") {
+		t.Fatalf("assignable contextual relation was not guessed: %v", guesses)
+	}
+}
+
 // The model_file value in the emitted YAML should be the exact path passed
 // in, not anything we tried to rewrite.
 func TestGenerateConfigEchoesModelPath(t *testing.T) {

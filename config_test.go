@@ -182,6 +182,7 @@ func TestValidateAgainstModel(t *testing.T) {
 		func(c *Config) { c.Probe.Targets = []TargetSpec{{Relation: "document#nope", Weight: 1}} },
 		func(c *Config) { c.Probe.SubjectTypes = []string{"robot"} },
 		func(c *Config) { c.Contextual.Relations = []string{"folder#active_context"} },
+		func(c *Config) { c.Contextual.Relations = []string{"document#can_view"} },
 		func(c *Config) { c.Conditions = map[string]CondConfig{"no_such_condition": {}} },
 		// suffix names a user type the relation does not directly accept
 		func(c *Config) { c.Seed.Fanout = map[string]int{"document#can_share@group#member": 3} },

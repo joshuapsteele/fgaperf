@@ -299,7 +299,10 @@ func contextualRelations(a *Analysis, cfg *Config) ([]contextualRelation, error)
 		}
 		refs := a.DirectRefs[parts[0]][parts[1]]
 		if len(refs) == 0 {
-			return nil, fmt.Errorf("contextual relation %q does not accept direct tuples", key)
+			return nil, fmt.Errorf("contextual relation %q does not accept direct tuples; use the direct relation that carries the request-local fact, not the computed relation that depends on it", key)
+		}
+		if !hasPlainDirectRef(refs) {
+			return nil, fmt.Errorf("contextual relation %q does not accept plain direct user tuples", key)
 		}
 		out = append(out, contextualRelation{ObjectType: parts[0], Relation: parts[1], Refs: refs})
 	}
