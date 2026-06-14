@@ -65,6 +65,8 @@ type Report struct {
 	Interim           bool                         `json:"interim,omitempty"` // true for in-progress soak snapshots
 	InterimIndex      int                          `json:"interim_index,omitempty"`
 	ReportInterval    string                       `json:"report_interval,omitempty"`
+	RepeatIndex       int                          `json:"repeat_index,omitempty"`
+	RepeatTotal       int                          `json:"repeat_total,omitempty"`
 
 	mismatchRecords []MismatchRecord // written to MismatchFile by Save
 }
@@ -534,6 +536,9 @@ func (r *Report) Markdown() string {
 		w("| Load clients | %d merged reports |", len(r.MergedFrom))
 	} else if r.ClientID > 0 {
 		w("| Client ID | %d |", r.ClientID)
+	}
+	if r.RepeatTotal > 1 {
+		w("| Repeat | %d of %d |", r.RepeatIndex, r.RepeatTotal)
 	}
 	if r.OfferedRate > 0 {
 		if r.Arrival == "poisson" {

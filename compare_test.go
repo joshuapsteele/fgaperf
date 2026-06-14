@@ -83,6 +83,61 @@ func TestCompareMarkdownShowsDeltasAndConfigDiff(t *testing.T) {
 	}
 }
 
+func TestCompareMarkdownLabelsRepeatedRunSignals(t *testing.T) {
+	makeReport := func(throughput float64, p99 time.Duration) *Report {
+		r := sampleReport()
+		r.Throughput = throughput
+		r.Overall.Mean = 2 * time.Millisecond
+		r.Overall.P50 = 2 * time.Millisecond
+		r.Overall.P90 = p99 / 2
+		r.Overall.P95 = p99 / 2
+		r.Overall.P99 = p99
+		r.ByTarget["document#viewer"] = Stats{Count: 50, P50: 2 * time.Millisecond, P99: p99}
+		return r
+	}
+	aSet := reportSet{
+		Paths: []string{"a-1.json", "a-2.json", "a-3.json"},
+		Reports: []*Report{
+			makeReport(100, 10*time.Millisecond),
+			makeReport(102, 11*time.Millisecond),
+			makeReport(98, 9*time.Millisecond),
+		},
+	}
+	bSet := reportSet{
+		Paths: []string{"b-1.json", "b-2.json", "b-3.json"},
+		Reports: []*Report{
+			makeReport(101, 30*time.Millisecond),
+			makeReport(99, 31*time.Millisecond),
+			makeReport(100, 29*time.Millisecond),
+		},
+	}
+
+	md := CompareSetMarkdown(aSet, bSet)
+	for _, want := range []string{
+		"Repeated cells are mean +/- sample stdev",
+		"| Throughput | 100.0 +/- 2.0/s | 100.0 +/- 1.0/s | +0.0/s | within noise |",
+		"| p99 | 10.00 +/- 1.00 ms | 30.00 +/- 1.00 ms | +20.00 ms (+200.0%) | significant |",
+		"p99 signal",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("repeated compare markdown missing %q:\n%s", want, md)
+		}
+	}
+}
+
+func TestParseCompareArgsSupportsRepeatedSets(t *testing.T) {
+	a, b, err := parseCompareArgs([]string{"a1.json,a2.json", ":", "b1.json", "b2.json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(a, ","), "a1.json,a2.json"; got != want {
+		t.Errorf("A paths = %q, want %q", got, want)
+	}
+	if got, want := strings.Join(b, ","), "b1.json,b2.json"; got != want {
+		t.Errorf("B paths = %q, want %q", got, want)
+	}
+}
+
 func TestCompareMarkdownCaveatsIncomparableRuns(t *testing.T) {
 	a := sampleReport()
 	b := sampleReport()

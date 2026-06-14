@@ -185,6 +185,15 @@ Run against the old server, upgrade OpenFGA or the datastore, run again, then:
 
 The comparison includes client latency, server-side duration, datastore queries
 per request, and config differences.
+If the p99 movement is small, run both sides with `-repeat 3` or higher and
+compare the sets:
+
+```bash
+./fgaperf compare results/before/*.json : results/after/*.json
+```
+
+The repeated comparison shows mean +/- stdev and labels deltas as significant
+or within noise.
 
 ## Gate CI on a Performance Regression
 

@@ -202,6 +202,7 @@ replay:
 | `load.rate` | `0` | Fixed offered requests/sec. `0` = closed loop. Mutually exclusive with `load.sweep`. |
 | `load.warmup` | `10s` | Leading slice discarded so caches/connections steady-state before measurement. |
 | `load.duration` | `60s` | Measured window after warmup. |
+| `load.repeat` | `1` | Number of independent measured runs to execute. Values greater than 1 write one normal results/findings pair per repeat and use deterministic per-repeat RNG streams; compare the resulting file sets with `fgaperf compare a/*.json : b/*.json` to see mean +/- stdev and significance labels. |
 | `load.report_interval` | unset | For long single-rate soaks, emit cumulative `interim-results-*` and `interim-findings-*` snapshots at this cadence while the final report still covers the whole measured window. Mutually exclusive with `load.sweep`. |
 | `load.consistency` | `MINIMIZE_LATENCY` | `MINIMIZE_LATENCY` (uses caches) or `HIGHER_CONSISTENCY` (skips them). Pick what your production callers use. |
 | `load.verify_results` | `false` (`true` in example) | Compare each load-time response against the probe-time ground truth and count mismatches. |

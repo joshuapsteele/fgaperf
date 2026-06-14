@@ -413,7 +413,7 @@ accumulator buckets for a two-hour window, sample segment naming, and a short
 local load run that writes interim reports, rotates samples, keeps raw samples
 out of memory, and preserves the aggregate sample count across chunks.
 
-### 10. Statistical significance in `compare`
+### 10. Statistical significance in `compare` ✅
 
 Motivation: a p99 delta between two single runs may be noise. Today `compare`
 reports the delta with no sense of whether it's meaningful.
@@ -427,6 +427,13 @@ Files: `main.go` (repeat mode); `compare.go`; `report.go`.
 
 Acceptance: comparing two sets of repeated runs labels each metric delta as
 "significant" or "within noise" from the observed variance.
+
+Implemented: `load.repeat` / `-repeat` executes repeated measured runs, records
+repeat metadata in each result, and offsets deterministic RNG streams per
+repeat. `fgaperf compare` now accepts two result sets separated by `:` (or
+comma-separated specs), renders repeated metrics as mean +/- sample stdev, and
+labels overall, server-side, and per-relation deltas with a Welch-test signal.
+Docs and examples cover the repeated-run workflow.
 
 ### 11. HTML / visual report
 

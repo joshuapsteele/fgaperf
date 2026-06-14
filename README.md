@@ -123,6 +123,9 @@ serialization overhead:
 # diff two runs (latency deltas, server-side deltas, config differences):
 ./fgaperf compare -config examples/config.yaml results/results-A.json results/results-B.json
 
+# compare repeated runs with run-to-run variance labels:
+./fgaperf compare results/a/*.json : results/b/*.json
+
 # merge distributed load-generator reports:
 ./fgaperf merge -output-dir results/merged results/client-*/results-*.json
 
@@ -151,6 +154,9 @@ walks through the common first-week failures. For common tuning questions, see
 tables the latency and server-side deltas, names every config key that
 differed between the runs, and calls out anything that makes the comparison
 apples-to-oranges (different endpoint, corpus size, duration, or concurrency).
+For noisy deltas, run with `-repeat N` (or `load.repeat: N`) on each side and
+compare the two sets with `:`; repeated tables show mean +/- sample stdev and
+label each delta `significant` or `within noise`.
 
 `merge` is for distributed load generation. Run `setup` and `probe` once, copy
 or share the same `config.yaml`, `.fgaperf-state.json`, and `corpus.json` to

@@ -24,7 +24,7 @@ func TestConfigDefaults(t *testing.T) {
 	if cfg.Seed.Cohorts == 0 || cfg.Seed.BatchSize == 0 || cfg.Seed.Writers == 0 {
 		t.Errorf("seed defaults missing: %+v", cfg.Seed)
 	}
-	if cfg.Load.Concurrency == 0 || cfg.Load.Duration == 0 {
+	if cfg.Load.Concurrency == 0 || cfg.Load.Duration == 0 || cfg.Load.Repeat != 1 {
 		t.Errorf("load defaults missing: %+v", cfg.Load)
 	}
 	if cfg.KeepStore {
@@ -140,6 +140,8 @@ func TestConfigValidation(t *testing.T) {
 		"negative client id":           "load:\n  client_id: -1\n",
 		"negative concurrency":         "load:\n  concurrency: -1\n",
 		"zero concurrency":             "load:\n  concurrency: 0\n",
+		"zero repeat":                  "load:\n  repeat: 0\n",
+		"negative repeat":              "load:\n  repeat: -1\n",
 		"negative openfga timeout":     "openfga:\n  timeout: -1s\n",
 		"negative warmup":              "load:\n  warmup: -1s\n",
 		"zero duration":                "load:\n  duration: 0s\n",

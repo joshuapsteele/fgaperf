@@ -152,6 +152,7 @@ type LoadConfig struct {
 	Arrival        string        `yaml:"arrival"`   // fixed-rate arrival process: uniform (even ticker) | poisson (exponential inter-arrivals)
 	Warmup         time.Duration `yaml:"warmup"`
 	Duration       time.Duration `yaml:"duration"`
+	Repeat         int           `yaml:"repeat"`          // number of independent measured runs to execute; 1 = normal single result
 	Consistency    string        `yaml:"consistency"`     // MINIMIZE_LATENCY | HIGHER_CONSISTENCY
 	Endpoint       string        `yaml:"endpoint"`        // check | batch-check | list-objects | list-users
 	BatchSize      int           `yaml:"batch_size"`      // for batch-check
@@ -168,6 +169,7 @@ type LoadConfig struct {
 	sampleAppend      bool          `yaml:"-"`
 	interimTupleCount int           `yaml:"-"`
 	interimSeedDur    time.Duration `yaml:"-"`
+	repeatIndex       int           `yaml:"-"`
 }
 
 // SweepConfig steps through fixed offered rates in one run, reusing the same
@@ -456,6 +458,7 @@ func (c *Config) validate() error {
 		{"probe.samples_per_target", c.Probe.Samples},
 		{"probe.concurrency", c.Probe.Concurrency},
 		{"load.concurrency", c.Load.Concurrency},
+		{"load.repeat", c.Load.Repeat},
 		{"load.batch_size", c.Load.BatchSize},
 	} {
 		if err := positive(p.name, p.v); err != nil {
@@ -705,6 +708,7 @@ func (c *Config) applyDefaults(fields yamlFieldSet) {
 	if c.Load.Duration == 0 && !fields.has("load", "duration") {
 		c.Load.Duration = 60 * time.Second
 	}
+	defInt(&c.Load.Repeat, 1, "load", "repeat")
 	def(&c.Load.Consistency, "MINIMIZE_LATENCY")
 	def(&c.Load.Endpoint, "check")
 	def(&c.Load.Arrival, "uniform")
@@ -731,6 +735,7 @@ type Overrides struct {
 	Rate        *int
 	Concurrency *int
 	ClientID    *int
+	Repeat      *int
 	Endpoint    *string
 	Consistency *string
 	Transport   *string
@@ -755,6 +760,9 @@ func (c *Config) applyOverrides(o Overrides) error {
 	}
 	if o.ClientID != nil {
 		c.Load.ClientID = *o.ClientID
+	}
+	if o.Repeat != nil {
+		c.Load.Repeat = *o.Repeat
 	}
 	if o.Endpoint != nil {
 		c.Load.Endpoint = *o.Endpoint

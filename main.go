@@ -112,6 +112,7 @@ func main() {
 	rateFlag := fs.Int("rate", 0, "override load.rate (req/s; 0 = closed loop)")
 	concFlag := fs.Int("concurrency", 0, "override load.concurrency")
 	clientIDFlag := fs.Int("client-id", 0, "override load.client_id (distinct RNG stream for multi-client runs)")
+	repeatFlag := fs.Int("repeat", 0, "override load.repeat (number of measured runs)")
 	endpointFlag := fs.String("endpoint", "", "override load.endpoint (check|batch-check|list-objects|list-users)")
 	consistencyFlag := fs.String("consistency", "", "override load.consistency (MINIMIZE_LATENCY|HIGHER_CONSISTENCY)")
 	transportFlag := fs.String("transport", "", "override load.transport (http|grpc)")
@@ -144,6 +145,8 @@ func main() {
 			ov.Concurrency = concFlag
 		case "client-id":
 			ov.ClientID = clientIDFlag
+		case "repeat":
+			ov.Repeat = repeatFlag
 		case "endpoint":
 			ov.Endpoint = endpointFlag
 		case "consistency":
@@ -227,10 +230,11 @@ func main() {
 			checkWithConfig(compareAgainstBaseline(*againstBaseline, args[0], cfg.OutputDir, *maxRegression, *exitOnRegression), cfg)
 			return
 		}
-		if len(args) != 2 {
-			fail("usage: fgaperf compare <results-a.json> <results-b.json>")
+		pathsA, pathsB, err := parseCompareArgs(args)
+		if err != nil {
+			fail("%v", err)
 		}
-		checkWithConfig(compare(args[0], args[1], cfg.OutputDir), cfg)
+		checkWithConfig(compareSets(pathsA, pathsB, cfg.OutputDir), cfg)
 	case "merge":
 		args := fs.Args()
 		if len(args) < 2 {
@@ -517,33 +521,59 @@ func run(client *FGAClient, cfg *Config, st *State) error {
 		scraper = NewMetricsScraper(cfg.Metrics.PrometheusURL)
 	}
 	seedDur, _ := time.ParseDuration(st.SeedDuration)
-	cfg.Load.interimTupleCount = st.TupleCount
-	cfg.Load.interimSeedDur = seedDur
-	var report *Report
-	if len(cfg.Load.Sweep.Rates) > 0 {
-		results, err := RunSweep(loadClient, corpus, cfg, scraper)
+	repeats := cfg.Load.Repeat
+	for i := 1; i <= repeats; i++ {
+		runCfg := *cfg
+		runCfg.Load.repeatIndex = i - 1
+		runCfg.Load.interimTupleCount = st.TupleCount
+		runCfg.Load.interimSeedDur = seedDur
+		if repeats > 1 && runCfg.Load.SampleFile != "" {
+			runCfg.Load.SampleFile = sampleSegmentPath(runCfg.Load.SampleFile, i)
+		}
+		if repeats > 1 {
+			fmt.Printf("repeat %d/%d\n", i, repeats)
+		}
+		report, err := buildRunReport(loadClient, corpus, &runCfg, scraper, st.TupleCount, seedDur)
 		if err != nil {
 			return err
 		}
-		report = BuildSweepReport(results, corpus, cfg, st.TupleCount, seedDur)
+		if repeats > 1 {
+			report.RepeatIndex = i
+			report.RepeatTotal = repeats
+		}
+		jsonPath, mdPath, err := report.Save(runCfg.OutputDir)
+		if err != nil {
+			return err
+		}
+		printRunSummary(report, jsonPath, mdPath)
+	}
+	return nil
+}
+
+func buildRunReport(loadClient LoadClient, corpus *Corpus, cfg *Config, scraper *MetricsScraper, tupleCount int, seedDur time.Duration) (*Report, error) {
+	if len(cfg.Load.Sweep.Rates) > 0 {
+		results, err := RunSweep(loadClient, corpus, cfg, scraper)
+		if err != nil {
+			return nil, err
+		}
+		report := BuildSweepReport(results, corpus, cfg, tupleCount, seedDur)
 		if report.SweepKneeRate > 0 {
 			fmt.Printf("sweep knee: %d req/s\n", report.SweepKneeRate)
 		} else {
 			fmt.Println("sweep knee: none (every step saturated)")
 		}
-	} else {
-		res, err := RunLoad(loadClient, corpus, cfg, scraper)
-		if err != nil {
-			return err
-		}
-		report = BuildReport(res, corpus, cfg, st.TupleCount, seedDur)
+		return report, nil
 	}
-	jsonPath, mdPath, err := report.Save(cfg.OutputDir)
+	res, err := RunLoad(loadClient, corpus, cfg, scraper)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	return BuildReport(res, corpus, cfg, tupleCount, seedDur), nil
+}
+
+func printRunSummary(report *Report, jsonPath, mdPath string) {
 	fmt.Printf("%s %.0f %s/sec | p50 %sms p95 %sms p99 %sms | errors %d | mismatches %d\n",
-		boldOut("throughput:"), report.Throughput, endpointNoun(cfg.Load.Endpoint), ms(report.Overall.P50), ms(report.Overall.P95), ms(report.Overall.P99),
+		boldOut("throughput:"), report.Throughput, endpointNoun(report.Endpoint), ms(report.Overall.P50), ms(report.Overall.P95), ms(report.Overall.P99),
 		report.Overall.Errors, report.Mismatches)
 	if report.ResultCounts != nil {
 		fmt.Printf("%s mean %.1f | p50 %d | p99 %d | max %d\n",
@@ -562,7 +592,6 @@ func run(client *FGAClient, cfg *Config, st *State) error {
 			boldOut("server:"), report.Server.DatastoreQueryCount.Mean, report.Server.RequestDuration.P99)
 	}
 	fmt.Printf("wrote %s and %s\n", jsonPath, mdPath)
-	return nil
 }
 
 func sortedKeys[V any](m map[string]V) []string {

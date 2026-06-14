@@ -102,6 +102,9 @@ Then compare two result JSON files:
 
 The comparison report names latency deltas and config differences so you can
 tell whether the change was meaningful or apples-to-oranges.
+When a p99 change looks close to noise, rerun each side with `-repeat 3` (or a
+higher count) and compare the two result sets with `fgaperf compare a/*.json :
+b/*.json` to get mean +/- stdev and significance labels.
 
 ## Next
 

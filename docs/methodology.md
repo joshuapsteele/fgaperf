@@ -194,6 +194,11 @@ fgaperf supports this discipline directly:
 - `fgaperf compare a.json b.json` renders two results side by side, computes
   per-relation deltas, and **names exactly which config keys differed** — so if
   you accidentally changed two things, the comparison tells you.
+- For noisy tails, run each side with `-repeat N` or `load.repeat: N`, then
+  compare the two result sets as `fgaperf compare results/a/*.json :
+  results/b/*.json`. The repeated comparison reports mean +/- sample stdev and
+  labels each delta `significant` or `within noise` using observed run-to-run
+  variance.
 
 When in doubt, fix `random_seed`, change one knob, rerun, and `compare`. A
 delta you can't attribute to a single named difference is not a result.

@@ -310,6 +310,11 @@ load:
   # want 5m+.
   duration: 60s
 
+  # Repeat the measured phase N times, writing one results/findings pair per
+  # repeat. Use this when a delta may be run-to-run noise; compare repeated
+  # sets with `fgaperf compare results/a/*.json : results/b/*.json`.
+  # repeat: 3
+
   # For long single-rate soaks, emit cumulative interim results/findings at
   # this cadence while the final report still covers the whole measured
   # window. Also rotates sample_file into numbered chunks at the same cadence.

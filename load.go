@@ -425,10 +425,13 @@ func newArrivalGen(arrival string, rate int, seed int64) *arrivalGen {
 	return g
 }
 
-const clientSeedStride int64 = 1_000_000_007
+const (
+	clientSeedStride int64 = 1_000_000_007
+	repeatSeedStride int64 = 10_000_000_019
+)
 
 func loadRunSeed(cfg *Config) int64 {
-	return cfg.RandomSeed + int64(cfg.Load.ClientID)*clientSeedStride
+	return cfg.RandomSeed + int64(cfg.Load.ClientID)*clientSeedStride + int64(cfg.Load.repeatIndex)*repeatSeedStride
 }
 
 // next returns the offset of the next slot relative to the load start.

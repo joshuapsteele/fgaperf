@@ -58,16 +58,16 @@ var commandDocs = map[string]commandDoc{
 	},
 	"run": {
 		Summary: "replay corpus under load and write results",
-		Details: "Requires setup and probe. Replays corpus.json using the configured endpoint, concurrency, rate/sweep, warmup, duration, and consistency.",
-		Flags:   []string{"config", "duration", "warmup", "rate", "concurrency", "client-id", "endpoint", "consistency", "transport", "output-dir"},
-		Example: "./fgaperf run -config examples/config.yaml -duration 30s\n./fgaperf run -config examples/config.yaml -rate 1000 -duration 1m\n./fgaperf run -config examples/config.yaml -client-id 2 -output-dir results/client-2",
+		Details: "Requires setup and probe. Replays corpus.json using the configured endpoint, concurrency, rate/sweep, warmup, duration, consistency, and repeat count.",
+		Flags:   []string{"config", "duration", "warmup", "rate", "concurrency", "client-id", "repeat", "endpoint", "consistency", "transport", "output-dir"},
+		Example: "./fgaperf run -config examples/config.yaml -duration 30s\n./fgaperf run -config examples/config.yaml -rate 1000 -duration 1m\n./fgaperf run -config examples/config.yaml -repeat 5 -output-dir results/a\n./fgaperf run -config examples/config.yaml -client-id 2 -output-dir results/client-2",
 		Gotcha:  "`load.rate` and `load.sweep.rates` are mutually exclusive.",
 	},
 	"all": {
 		Summary: "setup, probe, run, and cleanup in one command",
 		Details: "The usual one-shot workflow. Creates a fresh store, builds a corpus, runs load, writes results, and deletes the store unless -keep or keep_store is set.",
-		Flags:   []string{"config", "keep", "duration", "warmup", "rate", "concurrency", "client-id", "endpoint", "consistency", "transport", "output-dir"},
-		Example: "./fgaperf all -config examples/config.yaml -warmup 2s -duration 8s",
+		Flags:   []string{"config", "keep", "duration", "warmup", "rate", "concurrency", "client-id", "repeat", "endpoint", "consistency", "transport", "output-dir"},
+		Example: "./fgaperf all -config examples/config.yaml -warmup 2s -duration 8s\n./fgaperf all -config examples/config.yaml -repeat 5",
 		Gotcha:  "Use -keep when you want to rerun probe/run against the same seeded store.",
 	},
 	"cleanup": {
@@ -79,9 +79,9 @@ var commandDocs = map[string]commandDoc{
 	},
 	"compare": {
 		Summary: "render two results JSON files side by side, or gate against a baseline",
-		Details: "Writes a Markdown comparison with overall/per-relation deltas, server-side deltas, config differences, and comparability caveats. With -against-baseline, compares one results JSON to a compact saved baseline and exits non-zero when any configured regression threshold is exceeded (the CI regression gate; pass -exit-on-regression=false for an advisory, non-blocking comparison).",
+		Details: "Writes a Markdown comparison with overall/per-relation deltas, server-side deltas, config differences, and comparability caveats. For repeated runs, pass two file sets separated by `:` to report mean +/- stdev and label each delta significant or within noise. With -against-baseline, compares one results JSON to a compact saved baseline and exits non-zero when any configured regression threshold is exceeded (the CI regression gate; pass -exit-on-regression=false for an advisory, non-blocking comparison).",
 		Flags:   []string{"config", "output-dir", "against-baseline", "max-regression", "exit-on-regression"},
-		Example: "./fgaperf compare -config examples/config.yaml results/results-A.json results/results-B.json\n./fgaperf compare -against-baseline results/baseline.json -max-regression p99=10%,throughput=-5% results/results-new.json",
+		Example: "./fgaperf compare -config examples/config.yaml results/results-A.json results/results-B.json\n./fgaperf compare results/a/*.json : results/b/*.json\n./fgaperf compare -against-baseline results/baseline.json -max-regression p99=10%,throughput=-5% results/results-new.json",
 	},
 	"merge": {
 		Summary: "combine digest-enabled results from multiple load generators",
