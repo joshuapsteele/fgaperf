@@ -22,6 +22,7 @@ type Report struct {
 	Consistency     string                       `json:"consistency"`
 	Concurrency     int                          `json:"concurrency"`
 	OfferedRate     int                          `json:"offered_rate"`
+	Arrival         string                       `json:"arrival,omitempty"` // fixed-rate arrival process when non-default; "" = uniform/closed-loop
 	AchievedRate    float64                      `json:"achieved_rate_per_sec,omitempty"` // fixed-rate only: measured requests / measured window
 	DroppedSlots    int64                        `json:"dropped_rate_slots,omitempty"`
 	Warmup          string                       `json:"warmup"`
@@ -299,6 +300,11 @@ func BuildReport(res *LoadResult, corpus *Corpus, cfg *Config, tupleCount int, s
 
 		mismatchRecords: res.MismatchRecords,
 	}
+	// Surface a non-default arrival process; leaving it empty for the uniform
+	// default keeps closed-loop and uniform output byte-identical to before.
+	if res.OfferedRate > 0 && res.Arrival == "poisson" {
+		r.Arrival = res.Arrival
+	}
 	if seedDur > 0 {
 		r.SeedDuration = seedDur.String()
 		r.SeedRate = float64(tupleCount) / seedDur.Seconds()
@@ -460,7 +466,11 @@ func (r *Report) Markdown() string {
 	w("| Consistency | %s |", r.Consistency)
 	w("| Concurrency | %d workers |", r.Concurrency)
 	if r.OfferedRate > 0 {
-		w("| Offered rate | %d req/s |", r.OfferedRate)
+		if r.Arrival == "poisson" {
+			w("| Offered rate | %d req/s (poisson arrival) |", r.OfferedRate)
+		} else {
+			w("| Offered rate | %d req/s |", r.OfferedRate)
+		}
 	} else {
 		w("| Offered rate | closed loop |")
 	}

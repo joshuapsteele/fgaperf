@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/rand"
 	"net"
 	"os"
@@ -46,6 +47,7 @@ type LoadResult struct {
 	Consistency     string
 	Concurrency     int
 	OfferedRate     int
+	Arrival         string // fixed-rate arrival process actually used: uniform | poisson
 	Warmup          time.Duration
 	Duration        time.Duration
 	WallClock       time.Duration
@@ -368,6 +370,54 @@ func classifyErr(err error) string {
 	return "connection"
 }
 
+// arrivalGen produces the intended send offsets (relative to the load start)
+// for the fixed-rate goroutine. "uniform" spaces slots evenly — slot n at
+// n*interval, the even-ticker model that understates queueing. "poisson" draws
+// exponential inter-arrivals (-ln(1-U)/rate) from a dedicated seeded RNG and
+// accumulates them, an open-model arrival process whose burstiness exposes the
+// tail latency the even ticker smooths away. The dedicated RNG keeps the
+// schedule deterministic for a fixed seed without perturbing seed.go's RNG
+// consumption order (the determinism contract). offsets are monotonic
+// non-decreasing in both modes, so the warmup gating and DroppedSlots/RespLatency
+// accounting — all keyed off the intended time — are unchanged.
+type arrivalGen struct {
+	poisson  bool
+	interval time.Duration
+	rate     float64
+	rng      *rand.Rand
+	acc      time.Duration
+	n        int64
+}
+
+func newArrivalGen(arrival string, rate int, seed int64) *arrivalGen {
+	g := &arrivalGen{
+		interval: time.Second / time.Duration(rate),
+		rate:     float64(rate),
+	}
+	if arrival == "poisson" {
+		g.poisson = true
+		// Offset the seed so the arrival schedule is an independent RNG stream
+		// from the per-worker (id*7919) and churn (+999983) streams.
+		g.rng = rand.New(rand.NewSource(seed + 1000000007))
+	}
+	return g
+}
+
+// next returns the offset of the next slot relative to the load start.
+func (g *arrivalGen) next() time.Duration {
+	if !g.poisson {
+		off := time.Duration(g.n) * g.interval
+		g.n++
+		return off
+	}
+	// Exponential inter-arrival in seconds (1-U avoids log(0) since rng.Float64
+	// is in [0,1)), scaled to a Duration and added to the running total so
+	// intended times accumulate from the draws.
+	gap := -math.Log(1-g.rng.Float64()) / g.rate
+	g.acc += time.Duration(gap * float64(time.Second))
+	return g.acc
+}
+
 // RunLoad replays the corpus. scraper may be nil; when set, server metrics
 // are snapshotted at the warmup/measured boundary and after the last worker
 // exits, off the request path.
@@ -381,6 +431,7 @@ func RunLoad(client *FGAClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 		Consistency: lc.Consistency,
 		Concurrency: lc.Concurrency,
 		OfferedRate: lc.Rate,
+		Arrival:     lc.Arrival,
 		Warmup:      lc.Warmup,
 		Duration:    lc.Duration,
 		stats:       newLoadStats(),
@@ -419,22 +470,25 @@ func RunLoad(client *FGAClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 		}()
 	}
 
-	// Fixed-rate mode dispatches *intended* send times computed from the slot
-	// schedule (slot N fires at start + N*interval), never from when a worker
-	// happened to be free. Workers measure response latency against that
-	// intended time, so queueing delay under saturation shows up in the numbers
-	// instead of being coordinated away. The buffer holds one second of slots;
-	// only when workers fall a full second behind do we drop (and count) slots.
+	// Fixed-rate mode dispatches *intended* send times from a schedule, never
+	// from when a worker happened to be free, so queueing delay under saturation
+	// shows up in the numbers instead of being coordinated away. The arrival
+	// model sets the schedule: "uniform" spaces slots evenly (slot N at
+	// start + N*interval); "poisson" draws exponential inter-arrivals, an
+	// open-model process whose bursts expose queueing the even ticker smooths
+	// away. Workers measure response latency against the intended time. The
+	// buffer holds one second of slots; only when workers fall a full second
+	// behind do we drop (and count) slots.
 	var rateCh chan time.Time
 	stopRate := make(chan struct{})
 	var droppedSlots int64
 	if lc.Rate > 0 {
 		rateCh = make(chan time.Time, lc.Rate)
-		interval := time.Second / time.Duration(lc.Rate)
+		gen := newArrivalGen(lc.Arrival, lc.Rate, cfg.RandomSeed)
 		go func() {
 			var timer *time.Timer
-			for n := int64(0); ; n++ {
-				intended := start.Add(time.Duration(n) * interval)
+			for {
+				intended := start.Add(gen.next())
 				if d := time.Until(intended); d > 0 {
 					if timer == nil {
 						timer = time.NewTimer(d)

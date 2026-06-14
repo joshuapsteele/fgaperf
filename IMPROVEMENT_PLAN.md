@@ -55,7 +55,7 @@ then the end-to-end run against `examples/config.yaml` with a local OpenFGA.
 
 ---
 
-## P0 — Foundations that unlock the rest
+## P0 — Foundations that unlock the rest ✅
 
 These are leverage points: later items in every theme build on them. Do them
 first.
@@ -99,7 +99,7 @@ compares digest vs. exact on a known distribution); progress ticks no longer cop
 the sample slice; `sample_file` export still works. **Folds in review
 observation #1.**
 
-### 2. Result baseline + regression substrate
+### 2. Result baseline + regression substrate ✅
 
 Status: **Complete** (2026-06-13) — added compact baseline JSON export via
 `fgaperf baseline save <results.json>`, config fingerprints/random seed capture,
@@ -132,7 +132,21 @@ still fire (and downgrade to a warning) when configs differ.
 
 ## P1 — High-value capability
 
-### 3. Open-model (Poisson) arrival process for fixed-rate
+### 3. Open-model (Poisson) arrival process for fixed-rate ✅
+
+Status: **Complete** (2026-06-13) — added `load.arrival: uniform|poisson`
+(default `uniform`, validated). For `poisson` the rate goroutine draws
+exponential inter-arrivals (`-ln(1-U)/rate`) from a dedicated seeded RNG
+(`random_seed + 1000000007`, an independent stream from the worker/churn RNGs)
+and accumulates `intended` times; `DroppedSlots`/`RespLatency` accounting is
+untouched (both key off `intended`). The arrival model is recorded in the
+embedded resolved config and surfaced on the run-config table for poisson runs;
+uniform output is byte-identical. Factored the schedule into a testable
+`arrivalGen` (`load.go`). Verification: `go vet ./...`; `go test -race`
+(`arrival_test.go`: uniform = even ticker, poisson deterministic + monotonic +
+mean rate within 3% of offered + differs from uniform); end-to-end against the
+local compose stack at 800 req/s — poisson response-latency p99 6.16ms vs
+uniform 3.60ms (visibly heavier tail), achieved 809 vs 800 req/s offered.
 
 Motivation: fixed-rate mode fires slots on a uniform ticker (slot N at
 `start + N*interval`). Real traffic is bursty; a perfectly even arrival rate

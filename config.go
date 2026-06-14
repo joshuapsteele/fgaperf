@@ -127,7 +127,8 @@ func (t *TargetSpec) UnmarshalYAML(node *yaml.Node) error {
 
 type LoadConfig struct {
 	Concurrency   int           `yaml:"concurrency"`
-	Rate          int           `yaml:"rate"` // requests/sec; 0 = closed loop
+	Rate          int           `yaml:"rate"`    // requests/sec; 0 = closed loop
+	Arrival       string        `yaml:"arrival"` // fixed-rate arrival process: uniform (even ticker) | poisson (exponential inter-arrivals)
 	Warmup        time.Duration `yaml:"warmup"`
 	Duration      time.Duration `yaml:"duration"`
 	Consistency   string        `yaml:"consistency"`    // MINIMIZE_LATENCY | HIGHER_CONSISTENCY
@@ -306,6 +307,11 @@ func (c *Config) validate() error {
 	case "check", "batch-check", "list-objects", "list-users":
 	default:
 		return fmt.Errorf("load.endpoint must be check, batch-check, list-objects, or list-users, got %q", c.Load.Endpoint)
+	}
+	switch c.Load.Arrival {
+	case "uniform", "poisson":
+	default:
+		return fmt.Errorf("load.arrival must be uniform or poisson, got %q", c.Load.Arrival)
 	}
 	prob := func(name string, v float64) error {
 		if v < 0 || v > 1 {
@@ -651,6 +657,7 @@ func (c *Config) applyDefaults(fields yamlFieldSet) {
 	}
 	def(&c.Load.Consistency, "MINIMIZE_LATENCY")
 	def(&c.Load.Endpoint, "check")
+	def(&c.Load.Arrival, "uniform")
 	defInt(&c.Load.BatchSize, 20, "load", "batch_size")
 	if len(c.Load.Sweep.Rates) > 0 && c.Load.Sweep.StepDuration == 0 && !fields.has("load", "sweep", "step_duration") {
 		c.Load.Sweep.StepDuration = 60 * time.Second
