@@ -109,7 +109,7 @@ jobs:
             -max-regression "p99=10%,throughput=-5%" \
             -output-dir results "$RESULTS"
 
-      # Always upload the comparison + findings so a failed gate is debuggable.
+      # Always upload the comparison + reports so a failed gate is debuggable.
       - name: Upload reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -118,6 +118,7 @@ jobs:
           path: |
             results/baseline-compare-*.md
             results/findings-*.md
+            results/report-*.html
             results/results-*.json
 ```
 

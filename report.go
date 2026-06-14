@@ -1,7 +1,7 @@
 package main
 
-// report.go writes machine-readable results plus a findings document skeleton
-// with the measured numbers filled in.
+// report.go writes machine-readable results plus human-readable Markdown and
+// HTML findings with the measured numbers filled in.
 
 import (
 	"encoding/json"
@@ -393,49 +393,77 @@ func BuildReport(res *LoadResult, corpus *Corpus, cfg *Config, tupleCount int, s
 	return r
 }
 
-func (r *Report) Save(dir string) (string, string, error) {
-	return r.saveWithPatterns(dir, []string{"results-%s.json", "findings-%s.md"}, "mismatches-%s.json")
+func (r *Report) Save(dir string) (string, string, string, error) {
+	paths, err := r.saveWithPatterns(dir, []string{"results-%s.json", "findings-%s.md", "report-%s.html"}, "mismatches-%s.json", func() ([][]byte, error) {
+		data, err := json.MarshalIndent(r, "", " ")
+		if err != nil {
+			return nil, err
+		}
+		return [][]byte{data, []byte(r.Markdown()), []byte(r.HTML())}, nil
+	})
+	if err != nil {
+		return "", "", "", err
+	}
+	return paths[0], paths[1], paths[2], nil
 }
 
 func (r *Report) SaveInterim(dir string) (string, string, error) {
-	return r.saveWithPatterns(dir, []string{"interim-results-%s.json", "interim-findings-%s.md"}, "interim-mismatches-%s.json")
-}
-
-func (r *Report) saveWithPatterns(dir string, patterns []string, mismatchPattern string) (string, string, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	paths, err := r.saveWithPatterns(dir, []string{"interim-results-%s.json", "interim-findings-%s.md"}, "interim-mismatches-%s.json", func() ([][]byte, error) {
+		data, err := json.MarshalIndent(r, "", " ")
+		if err != nil {
+			return nil, err
+		}
+		return [][]byte{data, []byte(r.Markdown())}, nil
+	})
+	if err != nil {
 		return "", "", err
 	}
+	return paths[0], paths[1], nil
+}
+
+func (r *Report) saveWithPatterns(dir string, patterns []string, mismatchPattern string, payloads func() ([][]byte, error)) ([]string, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
 	stamp := r.GeneratedAt.Format("20060102-150405")
+	baseCount := len(patterns)
 	patterns = append([]string{}, patterns...)
 	var mmData []byte
 	if len(r.mismatchRecords) > 0 {
 		var err error
 		mmData, err = json.MarshalIndent(r.mismatchRecords, "", " ")
 		if err != nil {
-			return "", "", err
+			return nil, err
 		}
 		patterns = append(patterns, mismatchPattern)
 	}
 	artifacts, err := createArtifactSet(dir, stamp, patterns)
 	if err != nil {
-		return "", "", err
+		return nil, err
 	}
 	if len(mmData) > 0 {
-		r.MismatchFile = artifacts[2].path // recorded in results JSON and findings doc below
+		r.MismatchFile = artifacts[baseCount].path // recorded in results JSON and human-readable docs below
 	}
-	data, err := json.MarshalIndent(r, "", " ")
+	payloadData, err := payloads()
 	if err != nil {
 		cleanupArtifacts(artifacts)
-		return "", "", err
+		return nil, err
 	}
-	payloads := [][]byte{data, []byte(r.Markdown())}
 	if len(mmData) > 0 {
-		payloads = append(payloads, mmData)
+		payloadData = append(payloadData, mmData)
 	}
-	if err := writeArtifacts(artifacts, payloads); err != nil {
-		return "", "", err
+	if len(payloadData) != len(artifacts) {
+		cleanupArtifacts(artifacts)
+		return nil, fmt.Errorf("internal report artifact mismatch: %d payloads for %d files", len(payloadData), len(artifacts))
 	}
-	return artifacts[0].path, artifacts[1].path, nil
+	if err := writeArtifacts(artifacts, payloadData); err != nil {
+		return nil, err
+	}
+	paths := make([]string, baseCount)
+	for i := 0; i < baseCount; i++ {
+		paths[i] = artifacts[i].path
+	}
+	return paths, nil
 }
 
 type artifactFile struct {

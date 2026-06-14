@@ -541,11 +541,11 @@ func run(client *FGAClient, cfg *Config, st *State) error {
 			report.RepeatIndex = i
 			report.RepeatTotal = repeats
 		}
-		jsonPath, mdPath, err := report.Save(runCfg.OutputDir)
+		jsonPath, mdPath, htmlPath, err := report.Save(runCfg.OutputDir)
 		if err != nil {
 			return err
 		}
-		printRunSummary(report, jsonPath, mdPath)
+		printRunSummary(report, jsonPath, mdPath, htmlPath)
 	}
 	return nil
 }
@@ -571,7 +571,7 @@ func buildRunReport(loadClient LoadClient, corpus *Corpus, cfg *Config, scraper 
 	return BuildReport(res, corpus, cfg, tupleCount, seedDur), nil
 }
 
-func printRunSummary(report *Report, jsonPath, mdPath string) {
+func printRunSummary(report *Report, jsonPath, mdPath, htmlPath string) {
 	fmt.Printf("%s %.0f %s/sec | p50 %sms p95 %sms p99 %sms | errors %d | mismatches %d\n",
 		boldOut("throughput:"), report.Throughput, endpointNoun(report.Endpoint), ms(report.Overall.P50), ms(report.Overall.P95), ms(report.Overall.P99),
 		report.Overall.Errors, report.Mismatches)
@@ -591,7 +591,7 @@ func printRunSummary(report *Report, jsonPath, mdPath string) {
 		fmt.Printf("%s %.2f datastore queries/request | server-side p99 %.2fms\n",
 			boldOut("server:"), report.Server.DatastoreQueryCount.Mean, report.Server.RequestDuration.P99)
 	}
-	fmt.Printf("wrote %s and %s\n", jsonPath, mdPath)
+	fmt.Printf("wrote %s, %s, and %s\n", jsonPath, mdPath, htmlPath)
 }
 
 func sortedKeys[V any](m map[string]V) []string {

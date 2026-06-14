@@ -109,7 +109,7 @@ func writeTopLevel(b *strings.Builder, modelPath string) {
 # See README.md "Using Your Own Model" for the full procedure.
 model_file: %s
 
-# Where results-<stamp>.json and findings-<stamp>.md are written.
+# Where results-<stamp>.json, findings-<stamp>.md, and report-<stamp>.html are written.
 output_dir: results
 
 # Fixed seed makes tuple generation, probing, and request ordering
@@ -448,8 +448,9 @@ load:
   duration: 60s
 
   # For long single-rate soaks, emit cumulative interim results/findings at
-  # this cadence while the final report still covers the whole measured
-  # window. Also rotates sample_file into numbered chunks at the same cadence.
+  # this cadence while the final results/findings/report set still covers the
+  # whole measured window. Also rotates sample_file into numbered chunks at the
+  # same cadence.
   # Mutually exclusive with sweep. 0/off = only the final report.
   # report_interval: 5m
 

@@ -11,18 +11,18 @@ import (
 // `run` command against the same store/corpus, then this command folds the
 // bounded-memory sketches together.
 func mergeReports(paths []string, outDir string) error {
-	jsonPath, mdPath, err := mergeReportsAt(paths, outDir, time.Now().UTC())
+	jsonPath, mdPath, htmlPath, err := mergeReportsAt(paths, outDir, time.Now().UTC())
 	if err != nil {
 		return err
 	}
-	fmt.Printf("merged %d reports into %s and %s\n", len(paths), jsonPath, mdPath)
+	fmt.Printf("merged %d reports into %s, %s, and %s\n", len(paths), jsonPath, mdPath, htmlPath)
 	return nil
 }
 
-func mergeReportsAt(paths []string, outDir string, generatedAt time.Time) (string, string, error) {
+func mergeReportsAt(paths []string, outDir string, generatedAt time.Time) (string, string, string, error) {
 	r, err := buildMergedReport(paths, generatedAt)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	return r.Save(outDir)
 }

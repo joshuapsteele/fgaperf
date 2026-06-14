@@ -281,11 +281,43 @@ func TestBuildTimeline(t *testing.T) {
 	}
 }
 
+func TestHTMLReportSelfContainedCharts(t *testing.T) {
+	r := fixedReport()
+	r.Sweep = []SweepStep{
+		{OfferedRate: 1000, AchievedRate: 1000, Overall: r.Overall, ResponseLatency: r.Overall, PassesSLO: true},
+		{OfferedRate: 2000, AchievedRate: 1960, Overall: r.Overall, ResponseLatency: r.Overall, PassesSLO: true},
+		{OfferedRate: 3000, AchievedRate: 2200, Overall: r.Overall, ResponseLatency: r.Overall, Saturated: true, PassesSLO: false},
+	}
+	r.SweepKneeRate = 2000
+	r.ResponseLatency = &Stats{Count: 294000, Items: 294000, Min: time.Millisecond, Mean: 4 * time.Millisecond, P50: 3 * time.Millisecond, P90: 8 * time.Millisecond, P95: 9 * time.Millisecond, P99: 12 * time.Millisecond, Max: 60 * time.Millisecond}
+	r.ByTarget["document#<escaped&viewer>"] = Stats{Count: 10, Items: 10, Mean: time.Millisecond, P50: time.Millisecond, P95: 2 * time.Millisecond, P99: 3 * time.Millisecond, Max: 4 * time.Millisecond}
+
+	html := r.HTML()
+	for _, want := range []string{
+		"<!doctype html>",
+		"Rate sweep keep-up curve",
+		"Latency over time",
+		"Latency distribution",
+		"Per-relation latency",
+		"<svg",
+		"document#&lt;escaped&amp;viewer&gt;",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("HTML report missing %q:\n%.800s", want, html)
+		}
+	}
+	for _, forbidden := range []string{"<script", " src=", " href=", "@import"} {
+		if strings.Contains(strings.ToLower(html), forbidden) {
+			t.Fatalf("HTML report is not self-contained; found %q", forbidden)
+		}
+	}
+}
+
 func TestReportSaveDoesNotOverwriteSameTimestamp(t *testing.T) {
 	dir := t.TempDir()
 	r1 := fixedReport()
 	r1.mismatchRecords = []MismatchRecord{{User: "user:1", Relation: "viewer", Object: "document:1"}}
-	json1, md1, err := r1.Save(dir)
+	json1, md1, html1, err := r1.Save(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,13 +325,13 @@ func TestReportSaveDoesNotOverwriteSameTimestamp(t *testing.T) {
 
 	r2 := fixedReport()
 	r2.mismatchRecords = []MismatchRecord{{User: "user:2", Relation: "viewer", Object: "document:2"}}
-	json2, md2, err := r2.Save(dir)
+	json2, md2, html2, err := r2.Save(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	mm2 := r2.MismatchFile
 
-	for _, pair := range [][2]string{{json1, json2}, {md1, md2}, {mm1, mm2}} {
+	for _, pair := range [][2]string{{json1, json2}, {md1, md2}, {html1, html2}, {mm1, mm2}} {
 		if pair[0] == pair[1] {
 			t.Fatalf("artifact path reused: %s", pair[0])
 		}

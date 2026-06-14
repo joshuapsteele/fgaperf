@@ -13,7 +13,7 @@ probes which [Check](https://openfga.dev/docs/interacting/relationship-queries#c
 calls are allowed or denied, runs load, and writes a findings document with
 latency broken down by relation, [CEL-conditioned](https://openfga.dev/docs/modeling/conditions)
 paths, and [contextual-tuple](https://openfga.dev/docs/interacting/contextual-tuples)
-requests.
+requests, plus a self-contained HTML report with offline charts.
 
 fgaperf is a small Go binary that talks to the OpenFGA API directly — HTTP by
 default, or gRPC for the measured phase (`load.transport: grpc`) when you want
@@ -73,6 +73,7 @@ are written to:
 ```text
 results/results-<stamp>.json
 results/findings-<stamp>.md
+results/report-<stamp>.html
 ```
 
 For a shorter smoke test, override the run duration on the command line — no
@@ -178,9 +179,9 @@ For hours-long stability checks, set a long `load.duration` and a
 `load.report_interval`, for example `duration: 6h` and `report_interval: 5m`.
 During the run, fgaperf writes cumulative `interim-results-*` and
 `interim-findings-*` snapshots so you can watch latency drift without stopping
-the test. The normal final `results-*` / `findings-*` pair still covers the
-whole measured window. If `load.sample_file` is set, sample output rotates into
-numbered chunks at the same cadence.
+the test. The normal final `results-*` / `findings-*` / `report-*` set still
+covers the whole measured window. If `load.sample_file` is set, sample output
+rotates into numbered chunks at the same cadence.
 
 ### Regression gating
 
@@ -358,11 +359,14 @@ probe and run).
 
 ## Reading Results
 
-Every run writes a JSON file (machine-readable) and a `findings-<stamp>.md`
-document (human-readable) into `results/`. The findings document includes
-inline blurbs under each section explaining what it measures and how to read
-bad numbers; a "How to read this" legend at the bottom defines every column.
-The sections are:
+Every final run writes three artifacts into `results/`: a machine-readable
+`results-<stamp>.json`, a PR/terminal-friendly `findings-<stamp>.md`, and a
+self-contained `report-<stamp>.html` with inline SVG charts that opens offline
+without fetching assets. The Markdown findings include inline blurbs under
+each section explaining what it measures and how to read bad numbers; a "How to
+read this" legend at the bottom defines every column. The HTML headlines the
+same data visually: sweep knee curve, latency timeline, latency distribution,
+and per-relation p99 bars. The sections are:
 
 | Section | Use |
 |---|---|

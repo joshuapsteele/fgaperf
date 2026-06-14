@@ -72,7 +72,7 @@ func TestMergeReportsWritesArtifacts(t *testing.T) {
 	pathA := writeReportFixture(t, dir, "a.json", mergeFixtureReport(1, 1, 0, 10, start, []time.Duration{time.Millisecond}))
 	pathB := writeReportFixture(t, dir, "b.json", mergeFixtureReport(2, 1, 0, 20, start, []time.Duration{2 * time.Millisecond}))
 
-	jsonPath, mdPath, err := mergeReportsAt([]string{pathA, pathB}, dir, start)
+	jsonPath, mdPath, htmlPath, err := mergeReportsAt([]string{pathA, pathB}, dir, start)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,6 +81,9 @@ func TestMergeReportsWritesArtifacts(t *testing.T) {
 	}
 	if filepath.Base(mdPath) != "findings-20260102-150405.md" {
 		t.Fatalf("markdown artifact = %s", mdPath)
+	}
+	if filepath.Base(htmlPath) != "report-20260102-150405.html" {
+		t.Fatalf("HTML artifact = %s", htmlPath)
 	}
 	if _, err := LoadReport(jsonPath); err != nil {
 		t.Fatalf("merged JSON did not load: %v", err)

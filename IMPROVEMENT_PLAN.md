@@ -437,6 +437,20 @@ Docs and examples cover the repeated-run workflow.
 
 ### 11. HTML / visual report
 
+Status: **Complete** (2026-06-14) — added a self-contained HTML renderer
+(`report_html.go`) backed by the existing `Report` struct. Final `run` and
+`merge` saves now write `report-<stamp>.html` alongside `results-<stamp>.json`
+and `findings-<stamp>.md`; interim soak snapshots remain JSON/Markdown. The
+HTML uses inline CSS and inline SVG only (no JavaScript, network assets, or
+external fetches) and renders headline KPI cards, a sweep keep-up/knee curve,
+latency-over-time chart, approximate latency distribution curve, and
+per-relation p99 bars with p50 ticks. Tests cover escaping and offline
+self-containment plus artifact collision handling. Docs now describe the HTML
+artifact in README, getting-started, config reference, CI artifact upload, and
+sample/generated config comments. Verification: `go vet ./...`; `go test ./...`;
+`go build -o /tmp/fgaperf-html-report .` produced the binary (sandboxed run
+also printed Go's non-fatal module stat-cache permission warning).
+
 Motivation: the markdown findings are ideal for terminals and PRs, but a
 self-contained HTML with charts (sweep curve, latency-over-time, distribution
 CDF) is far more digestible for stakeholders and capacity reviews.

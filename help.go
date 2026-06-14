@@ -58,7 +58,7 @@ var commandDocs = map[string]commandDoc{
 	},
 	"run": {
 		Summary: "replay corpus under load and write results",
-		Details: "Requires setup and probe. Replays corpus.json using the configured endpoint, concurrency, rate/sweep, warmup, duration, consistency, and repeat count.",
+		Details: "Requires setup and probe. Replays corpus.json using the configured endpoint, concurrency, rate/sweep, warmup, duration, consistency, and repeat count, then writes results JSON, Markdown findings, and a self-contained HTML report.",
 		Flags:   []string{"config", "duration", "warmup", "rate", "concurrency", "client-id", "repeat", "endpoint", "consistency", "transport", "output-dir"},
 		Example: "./fgaperf run -config examples/config.yaml -duration 30s\n./fgaperf run -config examples/config.yaml -rate 1000 -duration 1m\n./fgaperf run -config examples/config.yaml -repeat 5 -output-dir results/a\n./fgaperf run -config examples/config.yaml -client-id 2 -output-dir results/client-2",
 		Gotcha:  "`load.rate` and `load.sweep.rates` are mutually exclusive.",
@@ -85,7 +85,7 @@ var commandDocs = map[string]commandDoc{
 	},
 	"merge": {
 		Summary: "combine digest-enabled results from multiple load generators",
-		Details: "Reads two or more single-rate results JSON files produced against the same store and corpus, merges their latency digests, sums concurrency/offered/achieved throughput, and writes one combined results JSON plus findings Markdown. Use distinct load.client_id values (or -client-id) for each generator so their request RNG streams differ.",
+		Details: "Reads two or more single-rate results JSON files produced against the same store and corpus, merges their latency digests, sums concurrency/offered/achieved throughput, and writes combined results JSON, Markdown findings, and a self-contained HTML report. Use distinct load.client_id values (or -client-id) for each generator so their request RNG streams differ.",
 		Flags:   []string{"config", "output-dir"},
 		Example: "./fgaperf merge -output-dir results/merged results/client-*/results-*.json",
 		Gotcha:  "Merge currently supports single-rate reports; sweep reports should be compared separately.",

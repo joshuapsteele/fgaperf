@@ -66,14 +66,16 @@ Start with a short run:
 
 `all` creates a fresh store, writes the model, seeds tuples, probes the corpus,
 runs load, writes `results/results-<stamp>.json` and
-`results/findings-<stamp>.md`, then deletes the store. While attached to a
-terminal, setup, probe, and load print live progress. When output is piped or
-CI captures logs, the progress lines are suppressed.
+`results/findings-<stamp>.md` plus `results/report-<stamp>.html`, then deletes
+the store. While attached to a terminal, setup, probe, and load print live
+progress. When output is piped or CI captures logs, the progress lines are
+suppressed.
 
 ## Read the Findings
 
-Open the newest `results/findings-<stamp>.md`. The Summary paragraph is the
-copy/paste version: sustained throughput, p99, mismatches, and any major
+Open the newest `results/report-<stamp>.html` for the visual version, or
+`results/findings-<stamp>.md` for a copy/pasteable Markdown summary. The
+Summary paragraph gives sustained throughput, p99, mismatches, and any major
 callout. The Headline results table gives aggregate latency. The Per-relation
 table is where to find hot relations. The Server-side view, when metrics are
 reachable, separates OpenFGA's own duration and datastore-query cost from
