@@ -116,6 +116,7 @@ func main() {
 	outDirFlag := fs.String("output-dir", "", "override output_dir")
 	againstBaseline := fs.String("against-baseline", "", "compare: compare one results JSON against a saved baseline")
 	maxRegression := fs.String("max-regression", defaultMaxRegression, "compare -against-baseline: comma-separated thresholds, e.g. p99=10%,throughput=-5%")
+	exitOnRegression := fs.Bool("exit-on-regression", true, "compare -against-baseline: exit non-zero when a threshold is breached (set false for an advisory comparison)")
 	fs.Parse(os.Args[2:])
 
 	cfgFile := *cfgPath
@@ -219,7 +220,7 @@ func main() {
 			if len(args) != 1 {
 				fail("usage: fgaperf compare -against-baseline <baseline.json> [flags] <results.json>")
 			}
-			checkWithConfig(compareAgainstBaseline(*againstBaseline, args[0], cfg.OutputDir, *maxRegression), cfg)
+			checkWithConfig(compareAgainstBaseline(*againstBaseline, args[0], cfg.OutputDir, *maxRegression, *exitOnRegression), cfg)
 			return
 		}
 		if len(args) != 2 {

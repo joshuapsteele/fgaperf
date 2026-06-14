@@ -151,6 +151,29 @@ Run against the old server, upgrade OpenFGA or the datastore, run again, then:
 The comparison includes client latency, server-side duration, datastore queries
 per request, and config differences.
 
+## Gate CI on a Performance Regression
+
+Capture a baseline from a representative run, then fail the build when a later
+run regresses past a threshold:
+
+```bash
+./fgaperf all -config examples/config.yaml -output-dir results
+./fgaperf baseline save -output-dir results "$(ls -t results/results-*.json | head -1)"
+cp "$(ls -t results/baseline-*.json | head -1)" baseline.json   # commit this
+
+# later — on every PR:
+./fgaperf all -config examples/config.yaml -output-dir results
+./fgaperf compare -against-baseline baseline.json \
+  -max-regression "p99=10%,throughput=-5%" \
+  "$(ls -t results/results-*.json | head -1)"
+```
+
+`compare -against-baseline` exits non-zero (naming the metric and target) when
+overall or any per-target p99 rises more than 10%, or throughput drops more than
+5%. Add `-exit-on-regression=false` for an advisory, non-blocking comparison.
+The full GitHub Actions recipe, threshold reference, and baseline-refresh
+workflow are in [ci-regression-gate.md](ci-regression-gate.md).
+
 ## References
 
 For full field definitions, see [configuration-reference.md](configuration-reference.md).

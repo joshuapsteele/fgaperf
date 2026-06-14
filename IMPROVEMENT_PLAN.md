@@ -311,7 +311,28 @@ a "DS queries/check (probe)" column whose values are sane (a deep tuple-to-users
 relation > a direct relation); without metrics the column is omitted; the default
 probe path is byte-identical when the flag is off.
 
-### 7. CI perf-regression gate (built on item 2)
+### 7. CI perf-regression gate (built on item 2) ✅
+
+Status: **Complete** (2026-06-14) — item 2 already made
+`compare -against-baseline` exit non-zero on a threshold breach; item 7 makes
+that an actual gate. Added an `-exit-on-regression` knob (default `true`,
+preserving item 2's shipped behavior; `-exit-on-regression=false` reports
+breaches as warnings + markdown but exits zero for an advisory/non-blocking
+comparison) threaded through `compareAgainstBaseline`. Added a live `perf-gate`
+job to `.github/workflows/ci.yaml` that runs the pipeline against a throwaway
+OpenFGA, saves a baseline, confirms the gate **passes** the healthy run, then
+forges an unbeatable baseline (1 ns p99, absurd throughput via `jq`) and
+confirms the gate **fails** the now-regressed run — the executable acceptance
+test. Documented end to end in a new `docs/ci-regression-gate.md` (copy-paste
+GitHub Actions recipe, threshold reference, baseline-refresh workflow, advisory
+mode), with a README "Regression gating" subsection, a recipes entry, and a
+configuration-reference subsection. Verification: `go vet ./...`;
+`go test -race ./...` (`baseline_test.go` gains an advisory-mode assertion: the
+same breaching results exit zero with `-exit-on-regression=false` and still
+write the comparison artifact); end-to-end against a local OpenFGA — gate passed
+a healthy run (exit 0), failed a forged 1 ns-p99 baseline (exit 1, naming
+`p99 overall` + `throughput overall`), and advisory mode reported both breaches
+while exiting 0.
 
 Motivation: catch performance regressions from OpenFGA upgrades, datastore tuning,
 or model changes automatically, the same way the unit tests catch correctness

@@ -121,6 +121,10 @@ serialization overhead:
 
 # diff two runs (latency deltas, server-side deltas, config differences):
 ./fgaperf compare -config examples/config.yaml results/results-A.json results/results-B.json
+
+# save a compact regression baseline, then gate a later run against it:
+./fgaperf baseline save results/results-A.json
+./fgaperf compare -against-baseline results/baseline-<stamp>.json results/results-B.json
 ```
 
 Use `all` for normal one-shot runs. Use the separate phases when you want to
@@ -143,6 +147,29 @@ walks through the common first-week failures. For common tuning questions, see
 tables the latency and server-side deltas, names every config key that
 differed between the runs, and calls out anything that makes the comparison
 apples-to-oranges (different endpoint, corpus size, duration, or concurrency).
+
+### Regression gating
+
+To catch a performance regression automatically — the way unit tests catch a
+correctness regression — distill a representative run into a compact baseline
+and gate later runs against it:
+
+```bash
+./fgaperf baseline save results/results-A.json          # writes results/baseline-<stamp>.json
+./fgaperf compare -against-baseline results/baseline-<stamp>.json \
+  -max-regression "p99=10%,throughput=-5%" results/results-B.json
+```
+
+`compare -against-baseline` **exits non-zero** (naming the metric and target)
+when overall or any per-target p99 rises past the threshold, or throughput drops
+past it — so a CI step fails the build on a regression and passes otherwise.
+`-max-regression` also accepts `mean`/`p50`/`p90`/`p95`/`max` and the
+server-side `ds_queries`/`server_p99` (when `metrics.prometheus_url` is set).
+Pass `-exit-on-regression=false` for an advisory, non-blocking comparison.
+
+The full GitHub Actions recipe, threshold reference, and baseline-refresh
+workflow are in [docs/ci-regression-gate.md](docs/ci-regression-gate.md); CI's
+own `perf-gate` job exercises the gate end to end on every push.
 
 ### Seeding at scale
 

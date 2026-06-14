@@ -346,3 +346,27 @@ want comparability:
   separately — fgaperf can't see them).
 - Same client placement relative to OpenFGA (latency matters; running on
   the same host vs across a region is a different test).
+
+---
+
+## Regression baselines
+
+Two commands turn a results JSON into a long-lived regression gate:
+
+- `fgaperf baseline save <results.json>` writes a compact
+  `baseline-<stamp>.json` (run shape, config fingerprint, random seed,
+  throughput, key latency percentiles, per-target p99, and server-side
+  datastore cost when present).
+- `fgaperf compare -against-baseline <baseline.json> [-max-regression …]
+  [-exit-on-regression=false] <results.json>` compares a fresh run to the
+  baseline and exits non-zero when any tracked metric regresses past its
+  threshold.
+
+`-max-regression` is a comma-separated `metric=percent` list (default
+`p99=10%,throughput=-5%`). Latency metrics (`mean`, `p50`, `p90`, `p95`, `p99`,
+`max`) gate the max allowed increase overall and per-target; `throughput` gates
+the max allowed decrease; `ds_queries` and `server_p99` gate server-side cost
+when `metrics.prometheus_url` is set. Sign is normalized to "worse direction
+allowed," so `throughput=5%` and `throughput=-5%` are equivalent. A gate that
+can't be evaluated becomes a warning, not a silent pass. See
+[ci-regression-gate.md](ci-regression-gate.md) for the CI recipe.

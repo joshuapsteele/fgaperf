@@ -511,11 +511,11 @@ func percentDelta(base, current float64) float64 {
 	return 100 * (current - base) / base
 }
 
-func compareAgainstBaseline(baselinePath, resultsPath, outDir, maxRegression string) error {
-	return compareAgainstBaselineAt(baselinePath, resultsPath, outDir, maxRegression, time.Now().UTC())
+func compareAgainstBaseline(baselinePath, resultsPath, outDir, maxRegression string, exitOnRegression bool) error {
+	return compareAgainstBaselineAt(baselinePath, resultsPath, outDir, maxRegression, exitOnRegression, time.Now().UTC())
 }
 
-func compareAgainstBaselineAt(baselinePath, resultsPath, outDir, maxRegression string, generatedAt time.Time) error {
+func compareAgainstBaselineAt(baselinePath, resultsPath, outDir, maxRegression string, exitOnRegression bool, generatedAt time.Time) error {
 	b, err := LoadBaseline(baselinePath)
 	if err != nil {
 		return err
@@ -545,7 +545,17 @@ func compareAgainstBaselineAt(baselinePath, resultsPath, outDir, maxRegression s
 	}
 	fmt.Printf("wrote %s\n", artifacts[0].path)
 	if len(cmp.Failures) > 0 {
-		return fmt.Errorf("baseline regression: %s", strings.Join(cmp.failureStrings(), "; "))
+		if exitOnRegression {
+			return fmt.Errorf("baseline regression: %s", strings.Join(cmp.failureStrings(), "; "))
+		}
+		// Advisory mode: surface the breaches but let the command succeed so a
+		// trend dashboard or non-blocking PR check can record them without
+		// failing the job.
+		for _, f := range cmp.Failures {
+			fmt.Fprintf(os.Stderr, "regression (advisory, gate disabled): %s\n", f.String())
+		}
+		fmt.Println("baseline comparison reported regressions (advisory mode; -exit-on-regression=false)")
+		return nil
 	}
 	fmt.Println("baseline comparison passed")
 	return nil

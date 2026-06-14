@@ -79,8 +79,8 @@ var commandDocs = map[string]commandDoc{
 	},
 	"compare": {
 		Summary: "render two results JSON files side by side, or gate against a baseline",
-		Details: "Writes a Markdown comparison with overall/per-relation deltas, server-side deltas, config differences, and comparability caveats. With -against-baseline, compares one results JSON to a compact saved baseline and exits non-zero when any configured regression threshold is exceeded.",
-		Flags:   []string{"config", "output-dir", "against-baseline", "max-regression"},
+		Details: "Writes a Markdown comparison with overall/per-relation deltas, server-side deltas, config differences, and comparability caveats. With -against-baseline, compares one results JSON to a compact saved baseline and exits non-zero when any configured regression threshold is exceeded (the CI regression gate; pass -exit-on-regression=false for an advisory, non-blocking comparison).",
+		Flags:   []string{"config", "output-dir", "against-baseline", "max-regression", "exit-on-regression"},
 		Example: "./fgaperf compare -config examples/config.yaml results/results-A.json results/results-B.json\n./fgaperf compare -against-baseline results/baseline.json -max-regression p99=10%,throughput=-5% results/results-new.json",
 	},
 	"baseline": {

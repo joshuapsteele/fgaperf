@@ -64,3 +64,51 @@ jobs:
           count=$(curl -s http://localhost:8080/stores | jq '.stores | length')
           echo "stores remaining: $count"
           test "$count" -eq 0
+
+  # Performance-regression gate: prove the `compare -against-baseline` gate both
+  # passes a healthy run and fails an injected regression. This is the
+  # self-test of the recipe in docs/ci-regression-gate.md; a real project would
+  # check in (or cache) a baseline produced from a representative run instead of
+  # forging one here.
+  perf-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go build -o fgaperf .
+      - name: Start OpenFGA
+        run: |
+          docker run -d --name openfga -p 8080:8080 openfga/openfga:latest run
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8080/healthz > /dev/null && exit 0
+            sleep 1
+          done
+          echo "OpenFGA did not become healthy" >&2
+          docker logs openfga >&2
+          exit 1
+      - name: Run the pipeline and save a baseline
+        run: |
+          ./fgaperf all -config examples/config.yaml -warmup 2s -duration 8s -output-dir results
+          RESULTS=$(ls -t results/results-*.json | head -1)
+          echo "RESULTS=$RESULTS" >> "$GITHUB_ENV"
+          ./fgaperf baseline save -output-dir results "$RESULTS"
+          cp "$(ls -t results/baseline-*.json | head -1)" results/baseline.json
+      - name: Gate the run against the baseline (expected to pass)
+        run: ./fgaperf compare -against-baseline results/baseline.json -output-dir results "$RESULTS"
+      - name: Fail the gate on an injected regression (expected to fail)
+        run: |
+          # Forge an unbeatable baseline (1 ns p99, absurd throughput) so the
+          # current run necessarily regresses and the gate must exit non-zero.
+          jq '.overall.p99_ns = 1 | .throughput_per_sec = 1e12' results/baseline.json > results/impossible-baseline.json
+          if ./fgaperf compare -against-baseline results/impossible-baseline.json -output-dir results "$RESULTS"; then
+            echo "regression gate did not fail on an injected regression" >&2
+            exit 1
+          fi
+          echo "regression gate correctly failed on the injected regression"
+      - name: Verify automatic cleanup left no stores behind
+        run: |
+          count=$(curl -s http://localhost:8080/stores | jq '.stores | length')
+          echo "stores remaining: $count"
+          test "$count" -eq 0

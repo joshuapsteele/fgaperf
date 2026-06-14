@@ -128,7 +128,7 @@ func TestCompareAgainstBaselineArtifactsAndExit(t *testing.T) {
 	}
 
 	generatedAt := time.Date(2026, 1, 2, 15, 4, 5, 0, time.UTC)
-	err = compareAgainstBaselineAt(baselinePath, currentPath, dir, "p99=10%", generatedAt)
+	err = compareAgainstBaselineAt(baselinePath, currentPath, dir, "p99=10%", true, generatedAt)
 	if err == nil {
 		t.Fatal("regressed current results passed baseline gate")
 	}
@@ -137,6 +137,16 @@ func TestCompareAgainstBaselineArtifactsAndExit(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "baseline-compare-20260102-150405.md")); err != nil {
 		t.Fatalf("comparison artifact missing: %v", err)
+	}
+
+	// Advisory mode: the same breaching results must not fail the gate, but the
+	// comparison artifact is still written.
+	advisoryAt := time.Date(2026, 1, 2, 15, 4, 6, 0, time.UTC)
+	if err := compareAgainstBaselineAt(baselinePath, currentPath, dir, "p99=10%", false, advisoryAt); err != nil {
+		t.Fatalf("advisory comparison failed the gate: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "baseline-compare-20260102-150406.md")); err != nil {
+		t.Fatalf("advisory comparison artifact missing: %v", err)
 	}
 
 	current.Overall.P99 = 8 * time.Millisecond
@@ -149,7 +159,7 @@ func TestCompareAgainstBaselineArtifactsAndExit(t *testing.T) {
 	if err := os.WriteFile(okPath, currentData, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := compareAgainstBaselineAt(baselinePath, okPath, dir, "p99=10%", generatedAt); err != nil {
+	if err := compareAgainstBaselineAt(baselinePath, okPath, dir, "p99=10%", true, generatedAt); err != nil {
 		t.Fatalf("in-tolerance current results failed baseline gate: %v", err)
 	}
 }
