@@ -422,8 +422,17 @@ func setup(client *FGAClient, a *Analysis, cfg *Config, resume bool) (*State, er
 }
 
 func probe(client *FGAClient, a *Analysis, cfg *Config, st *State) error {
-	world := NewWorld(a, cfg) // deterministic: same seed regenerates the same instance space
-	corpus, err := BuildCorpus(client, a, world, cfg, st.StoreID, st.ModelID)
+	var corpus *Corpus
+	var err error
+	if cfg.CorpusSource == "replay" {
+		// Replay reads the corpus from a real check log; it still learns each
+		// entry's ground truth empirically (principle #2), but skips the
+		// model-driven sampling and allowed/denied resampling entirely.
+		corpus, err = BuildReplayCorpus(client, a, cfg, st.StoreID, st.ModelID)
+	} else {
+		world := NewWorld(a, cfg) // deterministic: same seed regenerates the same instance space
+		corpus, err = BuildCorpus(client, a, world, cfg, st.StoreID, st.ModelID)
+	}
 	if err != nil {
 		return err
 	}

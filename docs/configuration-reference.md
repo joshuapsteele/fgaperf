@@ -28,6 +28,7 @@ naming the bad key.
 | `model_file` | `model.json` | Path to a compiled OpenFGA model JSON. Export from a `.fga` file with `fga model transform --file model.fga > model.json`. |
 | `state_file` | `.fgaperf-state.json` | Where `setup` records the store ID + tuple count for later phases to read. Delete this file to force a fresh setup. |
 | `corpus_file` | `corpus.json` | Where `probe` writes its corpus and `run` reads it from. |
+| `corpus_source` | `probe` | How `probe` builds the corpus. `probe` synthesizes candidates from the model (the default path). `replay` instead reads a real check log from `replay.file` (see the [`replay`](#replay--corpus-from-a-real-check-log) section). |
 | `output_dir` | `results` | Where `results-<stamp>.json`, `findings-<stamp>.md`, and (if any) `mismatches-<stamp>.json` are written. |
 | `random_seed` | `0` (time-based) | Fixed seed makes generation, probing, and request ordering reproducible. Same seed + same config = same run. |
 | `keep_store` | `false` | When `true`, `fgaperf all` does not delete the store at the end. Useful when iterating on probe/run without re-seeding. |
@@ -121,6 +122,46 @@ write churn).
 - **Production share**: if you know roughly what fraction of real checks
   allow, set `allowed_ratio` to match. Just be aware `max_duplication` may
   block extreme ratios.
+
+## `replay` — corpus from a real check log
+
+Set `corpus_source: replay` to build the corpus from a real check log instead
+of synthesizing one from the model. Use this when you have an OpenFGA request
+log or app audit trail and want the load mix to match *that* distribution
+exactly, bypassing probe synthesis.
+
+| Field | Default | Description |
+|---|---|---|
+| `replay.file` | _(required when `corpus_source: replay`)_ | Path to a JSONL check log. One JSON object per line: `{"user":..., "relation":..., "object":...}` with optional `contextual_tuples` (an array of `{user, relation, object[, condition]}`) and `context` (a CEL context map). Extra fields — store IDs, timestamps, consistency, etc. — are ignored, so a raw OpenFGA request log can be fed in directly. |
+
+How replay differs from the synthesized probe:
+
+- **Ground truth is still learned by probing.** Each *distinct* log entry is
+  executed once at `HIGHER_CONSISTENCY`, exactly as the normal probe does for
+  synthesized candidates (principle: outcomes are never predicted statically).
+  `probe.concurrency` sets how many of these run in parallel.
+- **The load mix follows the log.** The corpus is weighted by the log's natural
+  per-target (`type#relation`) frequencies, so the load phase replays each
+  target in proportion to how often it appeared. Within a target, distinct
+  checks are picked uniformly.
+- **Probe sampling and resampling are skipped.** `probe.targets`,
+  `samples_per_target`, `cohort_bias`, `allowed_ratio`, and `max_duplication`
+  do not apply — the log *is* the corpus. The `contextual` block is also unused;
+  contextual tuples come straight from each log line.
+- **The store must match the log.** The `user`/`object` IDs in the log have to
+  exist in the seeded store for outcomes to be meaningful — run `setup` against
+  the same model the log was captured from, or replay against a store seeded to
+  match.
+- **Malformed lines are skipped, not fatal.** Blank lines are ignored; lines
+  that are not valid JSON, are missing `user`/`relation`/`object`, or whose
+  `object` lacks a `type:id` prefix are counted and reported (with a few
+  sample reasons), and the run continues.
+
+```yaml
+corpus_source: replay
+replay:
+  file: production-checks.jsonl
+```
 
 ## `load` — the measured phase
 

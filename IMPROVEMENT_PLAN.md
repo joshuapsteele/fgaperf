@@ -213,7 +213,34 @@ Acceptance: `transport: grpc` runs all four endpoints against a gRPC OpenFGA and
 reports lower per-request overhead than HTTP for the same workload; HTTP stays
 the default and unchanged; CI exercises a gRPC smoke run.
 
-### 5. Traffic replay: build the corpus from a real check log
+### 5. Traffic replay: build the corpus from a real check log ✅
+
+Status: **Complete** (2026-06-14) — added `corpus_source: probe|replay` (default
+`probe`, validated; `replay` requires `replay.file`). New `replay.go` parses a
+JSONL check log (`{user, relation, object[, contextual_tuples, context]}`, extra
+fields ignored so a raw request log feeds in directly), deduplicates entries,
+and tallies natural per-target counts. The shared ground-truth executor was
+extracted from `BuildCorpus` into `classifyCandidates` (one
+`HIGHER_CONSISTENCY` check per distinct entry, principle #2 preserved); both the
+synthesized and replay builders use it. `BuildReplayCorpus` sets the corpus
+`Weights` to the log's per-target counts, so the existing `corpusPicker`
+reproduces the log's target mix (within-target picks stay uniform over distinct
+checks); probe sampling/resampling and the `contextual` block are bypassed under
+replay. Malformed/blank lines are counted, reported (with sample reasons), and
+skipped — never fatal. `probe` (and `all`) branch on `corpus_source`; `run` is
+unchanged. Verification: `go vet ./...`; `go test -race` (`replay_test.go`:
+dedup + natural-count weights, context/contextual tagging, malformed-line
+skipping, unknown-field tolerance, weights-drive-target-mix via `corpusPicker`,
+config validation, and an httptest end-to-end `BuildReplayCorpus` asserting
+distinct-only `HIGHER_CONSISTENCY` checks, recorded ground truth, weights, and
+churn templates); end-to-end against the local compose stack — seeded a store,
+derived a deliberately viewer-skewed 1165-line log (2 malformed lines) from a
+normal probe corpus, replayed it: 2 lines skipped/reported, 681 distinct checks
+across 5 targets, 0 errors / 0 mismatches, and the load's per-target sample mix
+tracked the log's target distribution within ~0.5% (viewer 51.4% run vs 51.9%
+log). Docs: README config table + How-It-Works + glossary, configuration-
+reference `replay` section, a recipes entry, and a commented block in
+`examples/config.yaml`.
 
 Motivation: the probe synthesizes a check distribution from the model. Teams that
 have a real check log (OpenFGA request logs, app audit trails) want to replay

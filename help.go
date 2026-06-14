@@ -51,7 +51,7 @@ var commandDocs = map[string]commandDoc{
 	},
 	"probe": {
 		Summary: "build corpus.json from probe-time ground truth",
-		Details: "Requires setup to have run. Samples configured targets, checks each candidate once with HIGHER_CONSISTENCY, then writes the replay corpus.",
+		Details: "Requires setup to have run. Samples configured targets, checks each candidate once with HIGHER_CONSISTENCY, then writes the replay corpus. With corpus_source: replay it instead reads a real check log (replay.file), still learning each distinct entry's ground truth, and weights the load mix by the log's per-target frequencies.",
 		Flags:   []string{"config"},
 		Example: "./fgaperf probe -config examples/config.yaml",
 		Gotcha:  "Reads model + state, writes `corpus.json`; rerun after changing seed/probe config.",

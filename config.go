@@ -17,20 +17,22 @@ import (
 )
 
 type Config struct {
-	OpenFGA    OpenFGAConfig         `yaml:"openfga"`
-	ModelFile  string                `yaml:"model_file"`
-	StateFile  string                `yaml:"state_file"`
-	CorpusFile string                `yaml:"corpus_file"`
-	OutputDir  string                `yaml:"output_dir"`
-	Seed       SeedConfig            `yaml:"seed"`
-	Contextual ContextualConfig      `yaml:"contextual"`
-	Probe      ProbeConfig           `yaml:"probe"`
-	Load       LoadConfig            `yaml:"load"`
-	Metrics    MetricsConfig         `yaml:"metrics"`
-	Conditions map[string]CondConfig `yaml:"conditions"`
-	Pools      map[string]PoolConfig `yaml:"pools"`
-	RandomSeed int64                 `yaml:"random_seed"`
-	KeepStore  bool                  `yaml:"keep_store"` // keep the store after `all` instead of deleting it
+	OpenFGA      OpenFGAConfig         `yaml:"openfga"`
+	ModelFile    string                `yaml:"model_file"`
+	StateFile    string                `yaml:"state_file"`
+	CorpusFile   string                `yaml:"corpus_file"`
+	CorpusSource string                `yaml:"corpus_source"` // how `probe` builds the corpus: probe (synthesize from the model) | replay (a real check log)
+	OutputDir    string                `yaml:"output_dir"`
+	Seed         SeedConfig            `yaml:"seed"`
+	Contextual   ContextualConfig      `yaml:"contextual"`
+	Probe        ProbeConfig           `yaml:"probe"`
+	Replay       ReplayConfig          `yaml:"replay"`
+	Load         LoadConfig            `yaml:"load"`
+	Metrics      MetricsConfig         `yaml:"metrics"`
+	Conditions   map[string]CondConfig `yaml:"conditions"`
+	Pools        map[string]PoolConfig `yaml:"pools"`
+	RandomSeed   int64                 `yaml:"random_seed"`
+	KeepStore    bool                  `yaml:"keep_store"` // keep the store after `all` instead of deleting it
 }
 
 type OpenFGAConfig struct {
@@ -125,6 +127,14 @@ func (t *TargetSpec) UnmarshalYAML(node *yaml.Node) error {
 		t.Weight = 1
 	}
 	return nil
+}
+
+// ReplayConfig points the corpus builder at a real check log when
+// corpus_source is "replay". The file is a JSONL of OpenFGA check requests —
+// one {user, relation, object[, contextual_tuples, context]} object per line —
+// whose natural per-target frequencies become the load-phase traffic mix.
+type ReplayConfig struct {
+	File string `yaml:"file"` // JSONL check log to replay; required when corpus_source: replay
 }
 
 type LoadConfig struct {
@@ -320,6 +330,14 @@ func (c *Config) validate() error {
 	case "http", "grpc":
 	default:
 		return fmt.Errorf("load.transport must be http or grpc, got %q", c.Load.Transport)
+	}
+	switch c.CorpusSource {
+	case "probe", "replay":
+	default:
+		return fmt.Errorf("corpus_source must be probe or replay, got %q", c.CorpusSource)
+	}
+	if c.CorpusSource == "replay" && c.Replay.File == "" {
+		return fmt.Errorf("corpus_source: replay requires replay.file (a JSONL check log to replay)")
 	}
 	prob := func(name string, v float64) error {
 		if v < 0 || v > 1 {
@@ -633,6 +651,7 @@ func (c *Config) applyDefaults(fields yamlFieldSet) {
 	def(&c.ModelFile, "model.json")
 	def(&c.StateFile, ".fgaperf-state.json")
 	def(&c.CorpusFile, "corpus.json")
+	def(&c.CorpusSource, "probe")
 	def(&c.OutputDir, "results")
 
 	defInt(&c.Seed.Cohorts, 5, "seed", "cohorts")

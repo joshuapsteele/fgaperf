@@ -240,6 +240,7 @@ long-form reference. The most important knobs are:
 | `seed.wildcard_probability`, `seed.wildcard_probabilities` | Chance each object gets a [public/wildcard](https://openfga.dev/docs/modeling/public-access) (`user:*`) tuple where the model allows one; the plural form overrides it per `type#relation`. |
 | `contextual.relations` | Direct relations supplied per request as [contextual tuples](https://openfga.dev/docs/interacting/contextual-tuples) instead of persisted seed tuples. Use this for facts that live in the request, like an OAuth scope or a "currently active session" flag. |
 | `contextual.attach_probability` | Probability a sampled check carries contextual tuples. Use `1.0` when every production request carries context, or less than `1.0` to include denied missing-context paths. |
+| `corpus_source`, `replay.file` | `probe` (default) synthesizes the check corpus from the model. `replay` instead builds it from a real check log — a JSONL of `{user, relation, object[, contextual_tuples, context]}` at `replay.file` — so the load mix matches production. fgaperf still learns each distinct entry's ground truth empirically; the load-phase target mix follows the log's per-target frequencies. Malformed lines are reported and skipped. |
 | `probe.targets` | Relations to measure. Omit to probe all relations. Entries are bare strings or `{relation: document#viewer, weight: 8}`; weights skew the load phase's traffic mix toward production-like shares. |
 | `probe.allowed_ratio` | Desired allowed/denied mix in the corpus. `0.5` means a 50/50 split; use `-1` to keep the natural mix the probe observed. |
 | `probe.max_duplication` | Caps how far probe may duplicate scarce outcomes to hit `allowed_ratio` (default `5`, `-1` = unbounded). Targets that would exceed it keep their natural mix, with a warning. |
@@ -272,7 +273,19 @@ records the observed allowed/denied result in `corpus.json`. This avoids
 trying to statically predict outcomes through
 [usersets](https://openfga.dev/docs/modeling/building-blocks/usersets),
 intersections, CEL conditions, and contextual tuples — which is a tar pit even
-for small models.
+for small models. With `corpus_source: replay`, the probe phase reads the
+corpus from a real check log instead of synthesizing one (see below), still
+learning ground truth the same way.
+
+**Traffic replay (optional).** If you have a real OpenFGA request log or app
+audit trail, set `corpus_source: replay` and point `replay.file` at a JSONL of
+check requests — one `{user, relation, object[, contextual_tuples, context]}`
+object per line (extra fields like store IDs or timestamps are ignored, so a
+raw request log works as-is). fgaperf executes each *distinct* entry once at
+`HIGHER_CONSISTENCY` to learn ground truth, then replays under load weighted by
+the log's natural per-target frequencies, so the traffic mix matches
+production. The log's `user`/`object` IDs must exist in the seeded store for the
+outcomes to be meaningful; malformed lines are reported and skipped, not fatal.
 
 **Run.** Replays the corpus under load with configurable concurrency and
 rate. With `verify_results: true` (default), fgaperf counts any response that
@@ -406,6 +419,10 @@ background helps.
   ground truth (allowed / denied) for each corpus entry. Always uses
   `HIGHER_CONSISTENCY` so probe expectations are not contaminated by stale
   caches.
+- **Traffic replay** — building the corpus from a real check log
+  (`corpus_source: replay`, `replay.file`) instead of synthesizing one, so the
+  load mix matches production. Ground truth is still learned by probing each
+  distinct entry; the load mix follows the log's per-target frequencies.
 - **Mismatch** — under load, a check whose allowed/denied result differs
   from what probe recorded. Almost always points at cache staleness or
   consistency settings, not at fgaperf itself.

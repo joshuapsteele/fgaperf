@@ -204,9 +204,39 @@ func BuildCorpus(client *FGAClient, a *Analysis, w *World, cfg *Config, storeID,
 		}
 	}
 
-	// Classify candidates with bounded concurrency.
+	valid := classifyCandidates(client, storeID, modelID, candidates, cfg.Probe.Concurrency, "probe")
+
+	entries := resample(valid, cfg.Probe.AllowedRatio, cfg.Probe.MaxDuplication, rng)
+	sort.SliceStable(entries, func(i, j int) bool { return entries[i].Target < entries[j].Target })
+	c := &Corpus{StoreID: storeID, ModelID: modelID, Entries: entries}
+	c.Stats = c.TargetStats()
+	// Persist weights only when configured: their absence keeps the load
+	// phase's original uniform-over-entries behavior.
+	weighted := false
+	weights := map[string]float64{}
+	for _, spec := range targets {
+		weights[spec.Relation] = spec.Weight
+		if spec.Weight != 1 {
+			weighted = true
+		}
+	}
+	if weighted {
+		c.Weights = weights
+	}
+	c.ChurnTemplates = churnTemplates(a)
+	return c, nil
+}
+
+// classifyCandidates executes each candidate once at HIGHER_CONSISTENCY to
+// learn its ground-truth outcome, with bounded concurrency, and returns the
+// candidates that did not error with Expected filled in. Errored candidates
+// are reported (first few verbatim) and dropped. This is the empirical core of
+// principle #2 (probe-then-replay): outcomes are learned by executing checks,
+// never predicted statically. Both the synthesized-corpus (BuildCorpus) and
+// real-log (BuildReplayCorpus) builders share it; phase names it in messages.
+func classifyCandidates(client *FGAClient, storeID, modelID string, candidates []CorpusEntry, concurrency int, phase string) []CorpusEntry {
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, cfg.Probe.Concurrency)
+	sem := make(chan struct{}, concurrency)
 	errs := make([]error, len(candidates))
 	progress := newProbeProgress(len(candidates))
 	stopProgress := make(chan struct{})
@@ -253,35 +283,16 @@ func BuildCorpus(client *FGAClient, a *Analysis, w *World, cfg *Config, storeID,
 		if e != nil {
 			errCount++
 			if errCount <= 3 {
-				fmt.Fprintf(os.Stderr, "probe error: %v\n", e)
+				fmt.Fprintf(os.Stderr, "%s error: %v\n", phase, e)
 			}
 			continue
 		}
 		valid = append(valid, candidates[i])
 	}
 	if errCount > 0 {
-		fmt.Fprintf(os.Stderr, "probe: %d/%d candidates errored and were dropped\n", errCount, len(candidates))
+		fmt.Fprintf(os.Stderr, "%s: %d/%d candidates errored and were dropped\n", phase, errCount, len(candidates))
 	}
-
-	entries := resample(valid, cfg.Probe.AllowedRatio, cfg.Probe.MaxDuplication, rng)
-	sort.SliceStable(entries, func(i, j int) bool { return entries[i].Target < entries[j].Target })
-	c := &Corpus{StoreID: storeID, ModelID: modelID, Entries: entries}
-	c.Stats = c.TargetStats()
-	// Persist weights only when configured: their absence keeps the load
-	// phase's original uniform-over-entries behavior.
-	weighted := false
-	weights := map[string]float64{}
-	for _, spec := range targets {
-		weights[spec.Relation] = spec.Weight
-		if spec.Weight != 1 {
-			weighted = true
-		}
-	}
-	if weighted {
-		c.Weights = weights
-	}
-	c.ChurnTemplates = churnTemplates(a)
-	return c, nil
+	return valid
 }
 
 type contextualRelation struct {

@@ -180,6 +180,27 @@ pools:
     # values: [read, write, admin]
 
 # ---------------------------------------------------------------------------
+# corpus_source: where the corpus comes from
+# ---------------------------------------------------------------------------
+# probe  (default) = synthesize the check corpus from the model (the probe:
+#                    block below).
+# replay           = build it from a real check log instead, so the load mix
+#                    matches production. fgaperf still learns each distinct
+#                    entry's ground truth by checking it once with
+#                    HIGHER_CONSISTENCY; the load phase then weights traffic by
+#                    the log's natural per-target frequencies. The log's
+#                    user/object IDs must exist in the seeded store. The probe:
+#                    and contextual: blocks are ignored under replay.
+# corpus_source: replay
+# replay:
+#   # JSONL, one check per line. Required fields: user, relation, object.
+#   # Optional: contextual_tuples (array of {user, relation, object[, condition]})
+#   # and context (CEL context map). Extra fields (store IDs, timestamps, ...)
+#   # are ignored, so a raw OpenFGA request log works as-is. Malformed lines
+#   # are reported and skipped, not fatal.
+#   file: production-checks.jsonl
+
+# ---------------------------------------------------------------------------
 # probe: which checks to measure, and how the corpus is built
 # ---------------------------------------------------------------------------
 probe:

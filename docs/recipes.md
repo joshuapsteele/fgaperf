@@ -81,6 +81,29 @@ Probe still samples each target evenly, but the load phase sends more traffic
 to the weighted relation. Use this when production traffic is concentrated on
 one permission path.
 
+## Replay Production Traffic
+
+```yaml
+corpus_source: replay
+replay:
+  file: production-checks.jsonl
+```
+
+When you have a real check log — an OpenFGA request log or app audit trail —
+replay reproduces *that* distribution instead of synthesizing one, so the load
+mix matches production exactly. The log is JSONL, one check per line:
+
+```jsonl
+{"user":"user:1","relation":"viewer","object":"document:1"}
+{"user":"user:2","relation":"editor","object":"document:9","context":{"scope":"write"}}
+```
+
+Extra fields (store IDs, timestamps, ...) are ignored, so a raw request log
+works as-is. fgaperf learns each distinct entry's ground truth the same way the
+probe does, then weights the load by the log's per-target frequencies. Seed the
+store from the same model the log was captured against, so the log's
+`user`/`object` IDs resolve. Malformed lines are reported and skipped.
+
 ## Reproduce a Noisy Run
 
 ```yaml
