@@ -379,7 +379,7 @@ Acceptance evidence: `go test ./...` includes synthetic two-client merge tests
 that verify summed throughput/rates and merged p50/p99 distributions from the
 digests, plus compatibility rejection and CLI no-server coverage.
 
-### 9. Soak mode: long-run stability with interim reports
+### 9. Soak mode: long-run stability with interim reports ✅
 
 Motivation: hours-long runs surface leaks, cache-eviction cliffs, and datastore
 compaction that a 60s run misses. Today's retain-all-samples model can't sustain
