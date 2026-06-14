@@ -258,6 +258,15 @@ load:
   # list-users  = "which users can access this object?" — the inverse.
   # The list endpoints reuse the corpus triples; their verify_results is a
   # best-effort spot-check (can false-positive under result-cap truncation).
+  #
+  # endpoint also accepts a weighted blend instead of a single name: each
+  # request picks an endpoint by weight, so one run measures the contention a
+  # real service sees when check, batch-check, and the list calls share the
+  # server. The findings then split percentiles per endpoint. For example:
+  #   endpoint:
+  #     check: 70
+  #     list-objects: 20
+  #     batch-check: 10
   endpoint: check
 
   # Wire protocol for the measured phase: http (REST+JSON, default) or grpc.

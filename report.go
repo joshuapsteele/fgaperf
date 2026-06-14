@@ -37,6 +37,7 @@ type Report struct {
 	TotalChecks       int64                        `json:"total_checks_incl_warmup"`
 	Mismatches        int64                        `json:"result_mismatches"`
 	Throughput        float64                      `json:"throughput_per_sec"`
+	EndpointMix       []EndpointShare              `json:"endpoint_mix,omitempty"` // mixed-endpoint runs only: the configured endpoint blend
 	Overall           Stats                        `json:"overall"`
 	ResponseLatency   *Stats                       `json:"response_latency,omitempty"` // fixed-rate only: intended send -> response
 	Conditioned       Stats                        `json:"conditioned"`
@@ -44,6 +45,7 @@ type Report struct {
 	Contextual        Stats                        `json:"contextual"`
 	NoContextual      Stats                        `json:"without_contextual"`
 	ByTarget          map[string]Stats             `json:"by_target"`
+	ByEndpoint        map[string]Stats             `json:"by_endpoint,omitempty"` // mixed-endpoint runs only: per-endpoint latency split
 	DSQueriesByTarget map[string]float64           `json:"ds_queries_by_target,omitempty"` // probe-time mean datastore queries per check, per relation; absent unless probe.attribute_ds_queries ran
 	ErrorsByClass     map[string]int64             `json:"errors_by_class,omitempty"`
 	ErrorSamples      []string                     `json:"error_samples,omitempty"`
@@ -90,6 +92,36 @@ type Environment struct {
 }
 
 const toolVersion = "0.1.0"
+
+// EndpointShare is one endpoint of a mixed-endpoint run: its configured weight
+// and the percentage of offered traffic that weight represents.
+type EndpointShare struct {
+	Endpoint string  `json:"endpoint"`
+	Weight   float64 `json:"weight"`
+	Share    float64 `json:"share_pct"`
+}
+
+// endpointShares converts a configured EndpointMix into normalized shares,
+// sorted by endpoint name. Returns nil for a single-endpoint mix so
+// single-endpoint reports are unchanged.
+func endpointShares(m EndpointMix) []EndpointShare {
+	if len(m.Weights) <= 1 {
+		return nil
+	}
+	var total float64
+	for _, w := range m.Weights {
+		total += w.Weight
+	}
+	out := make([]EndpointShare, 0, len(m.Weights))
+	for _, w := range m.Weights {
+		share := 0.0
+		if total > 0 {
+			share = 100 * w.Weight / total
+		}
+		out = append(out, EndpointShare{Endpoint: w.Endpoint, Weight: w.Weight, Share: share})
+	}
+	return out
+}
 
 // CountStats is the distribution of result-set sizes for list endpoints. The
 // shape of this distribution is the headline finding for ListObjects/ListUsers:
@@ -359,6 +391,17 @@ func BuildReport(res *LoadResult, corpus *Corpus, cfg *Config, tupleCount int, s
 	for t, ss := range lst.byTarget {
 		r.ByTarget[t] = ss.Stats()
 	}
+	// A mixed-endpoint run splits percentiles per endpoint; a single-endpoint
+	// run leaves both fields nil, keeping its report byte-identical to before.
+	if shares := endpointShares(cfg.Load.Endpoint); len(shares) > 0 {
+		r.EndpointMix = shares
+	}
+	if len(lst.byEndpoint) > 1 {
+		r.ByEndpoint = map[string]Stats{}
+		for ep, ss := range lst.byEndpoint {
+			r.ByEndpoint[ep] = ss.Stats()
+		}
+	}
 	// Carry probe-time per-relation DS attribution through to the report; nil
 	// (the default) leaves the report JSON and per-relation table unchanged.
 	r.DSQueriesByTarget = corpus.DSQueries
@@ -554,7 +597,11 @@ func (r *Report) Markdown() string {
 	w("")
 	w("| Parameter | Value |")
 	w("|---|---|")
-	w("| Endpoint | %s |", r.Endpoint)
+	if len(r.EndpointMix) > 0 {
+		w("| Endpoint | %s |", endpointMixSentence(r.EndpointMix))
+	} else {
+		w("| Endpoint | %s |", r.Endpoint)
+	}
 	if r.Transport == "grpc" {
 		w("| Transport | gRPC |")
 	}
@@ -673,6 +720,36 @@ func (r *Report) Markdown() string {
 		deltaP50 := float64(r.Contextual.P50-r.NoContextual.P50) / float64(time.Millisecond)
 		deltaP99 := float64(r.Contextual.P99-r.NoContextual.P99) / float64(time.Millisecond)
 		w("Checks carrying contextual tuples ran %.2f ms slower at p50 and %.2f ms slower at p99 than checks without contextual tuples. This split reflects the configured corpus mix; compare the same target relation with and without contextual assertions for the cleanest read.", deltaP50, deltaP99)
+		w("")
+	}
+	if len(r.ByEndpoint) > 0 {
+		w("## Per-endpoint breakdown")
+		w("")
+		w("*This run blended several endpoints against one server, so these rows show how each endpoint fared under the shared contention. \"Share\" is the configured traffic weight; \"Requests\" is the measured count of that endpoint in the window. Latency is not comparable across endpoints — a `list-objects` call does far more work than a `check` — so read each row against its own expectations, and use this split to see whether one endpoint's load degraded another's.*")
+		w("")
+		shareByEndpoint := map[string]float64{}
+		for _, s := range r.EndpointMix {
+			shareByEndpoint[s.Endpoint] = s.Share
+		}
+		w("| Endpoint | Share | Requests | Errors | Mean | p50 | p95 | p99 |")
+		w("|---|---|---|---|---|---|---|---|")
+		endpoints := make([]string, 0, len(r.ByEndpoint))
+		for ep := range r.ByEndpoint {
+			endpoints = append(endpoints, ep)
+		}
+		sort.Strings(endpoints)
+		for _, ep := range endpoints {
+			s := r.ByEndpoint[ep]
+			if s.Count == 0 && s.Errors == 0 {
+				continue
+			}
+			share := "—"
+			if v, ok := shareByEndpoint[ep]; ok {
+				share = fmt.Sprintf("%.0f%%", v)
+			}
+			w("| %s | %s | %d | %d | %s | %s | %s | %s |",
+				ep, share, s.Count, s.Errors, ms(s.Mean), ms(s.P50), ms(s.P95), ms(s.P99))
+		}
 		w("")
 	}
 	if len(r.Sweep) > 0 {
@@ -876,6 +953,10 @@ func (r *Report) Markdown() string {
 	w("")
 	w("**Per-relation table.** \"Requests\" is sample count for that relation in the measured window; \"Errors\" counts failures attributed to checks of that relation. Compare relations of similar graph depth — a deeper relation with higher latency may be entirely expected. The \"DS queries/check (probe)\" column appears only when `probe.attribute_ds_queries` ran with a metrics endpoint: it reports how many datastore reads each relation's check costs, attributed one relation at a time at probe time — the sharpest signal for spotting an expensive rewrite.")
 	w("")
+	if len(r.ByEndpoint) > 0 {
+		w("**Per-endpoint table.** Only present for a mixed-endpoint run (`load.endpoint` as a weighted blend). Each row is one endpoint's slice of the shared load: \"Share\" is its configured traffic weight, \"Requests\" its measured count. Latency is not comparable across endpoints — a list call resolves far more than a single check — so read each row on its own and watch for one endpoint's traffic inflating another's tail.")
+		w("")
+	}
 	w("**Latency over time.** The measured window split into equal time buckets (the width adapts so any run is ~12 rows). \"Throughput/s\" divides each bucket's completed items by the bucket width. Read it as a trend: early buckets slower than later ones is cache warming; a single bucket spiking is a GC pause or datastore compaction; p99 trending upward across buckets is the server falling behind. The last bucket may be partial and read low.")
 	w("")
 	w("**Rate sweep.** \"DS queries/req\" is the server-reported mean datastore queries per Check at that offered rate; it rises sharply once OpenFGA starts spending most of its time on the database. The knee is the highest offered step that kept up (Achieved ≥ 98%% of Offered) and, if `load.slo_p99` was set, also stayed under that SLO.")
@@ -905,9 +986,21 @@ func endpointNoun(endpoint string) string {
 		return "list-objects calls"
 	case "list-users":
 		return "list-users calls"
+	case "mixed":
+		return "requests"
 	default:
 		return "checks"
 	}
+}
+
+// endpointMixSentence renders the configured blend as "mixed (check 70%,
+// list-objects 30%)" for the config table.
+func endpointMixSentence(shares []EndpointShare) string {
+	parts := make([]string, 0, len(shares))
+	for _, s := range shares {
+		parts = append(parts, fmt.Sprintf("%s %.0f%%", s.Endpoint, s.Share))
+	}
+	return "mixed (" + strings.Join(parts, ", ") + ")"
 }
 
 func sloClause(slo string) string {

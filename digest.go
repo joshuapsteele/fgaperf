@@ -620,6 +620,7 @@ type ReportDigests struct {
 	Contextual    StatsDigest            `json:"contextual"`
 	NoContextual  StatsDigest            `json:"without_contextual"`
 	ByTarget      map[string]StatsDigest `json:"by_target,omitempty"`
+	ByEndpoint    map[string]StatsDigest `json:"by_endpoint,omitempty"` // mixed-endpoint runs only; absent for single-endpoint runs
 	ResultCounts  *CountStatsDigest      `json:"result_counts,omitempty"`
 	Timeline      *TimelineDigest        `json:"timeline,omitempty"`
 	WriteChurn    *StatsDigest           `json:"write_churn,omitempty"`
@@ -643,6 +644,14 @@ func reportDigestsFromLoadStats(st *loadStats, includeResponse bool) *ReportDige
 	}
 	for target, ss := range st.byTarget {
 		d.ByTarget[target] = statsDigestFromLatencyStats(*ss)
+	}
+	// Only emit the per-endpoint split for a genuine blend; a single-endpoint
+	// run keeps its results JSON byte-identical to before this knob existed.
+	if len(st.byEndpoint) > 1 {
+		d.ByEndpoint = map[string]StatsDigest{}
+		for endpoint, ss := range st.byEndpoint {
+			d.ByEndpoint[endpoint] = statsDigestFromLatencyStats(*ss)
+		}
 	}
 	counts := countStatsDigestFromAccumulator(st.resultCounts)
 	if !counts.IsZero() {
@@ -673,6 +682,10 @@ func (d *ReportDigests) loadStats() *loadStats {
 		ls := ss.latencyStats()
 		st.byTarget[target] = &ls
 	}
+	for endpoint, ss := range d.ByEndpoint {
+		ls := ss.latencyStats()
+		st.byEndpoint[endpoint] = &ls
+	}
 	if d.ResultCounts != nil {
 		st.resultCounts = d.ResultCounts.accumulator()
 	}
@@ -692,12 +705,13 @@ type loadStats struct {
 	contextual    latencyStats
 	noContextual  latencyStats
 	byTarget      map[string]*latencyStats
+	byEndpoint    map[string]*latencyStats // populated per request; only split out in the report when more than one endpoint ran
 	resultCounts  countStatsAccumulator
 	timeline      timelineStatsAccumulator
 }
 
 func newLoadStats() *loadStats {
-	return &loadStats{byTarget: map[string]*latencyStats{}}
+	return &loadStats{byTarget: map[string]*latencyStats{}, byEndpoint: map[string]*latencyStats{}}
 }
 
 func loadStatsFromSamples(samples []Sample) *loadStats {
@@ -728,6 +742,15 @@ func (s *loadStats) Merge(other *loadStats) {
 		}
 		s.byTarget[target].Merge(*ss)
 	}
+	if s.byEndpoint == nil {
+		s.byEndpoint = map[string]*latencyStats{}
+	}
+	for endpoint, ss := range other.byEndpoint {
+		if s.byEndpoint[endpoint] == nil {
+			s.byEndpoint[endpoint] = &latencyStats{}
+		}
+		s.byEndpoint[endpoint].Merge(*ss)
+	}
 	s.resultCounts.Merge(other.resultCounts)
 	s.timeline.Merge(other.timeline)
 }
@@ -753,6 +776,15 @@ func (s *loadStats) AddSample(sample Sample) {
 		s.byTarget[sample.Target] = &latencyStats{}
 	}
 	s.byTarget[sample.Target].AddSample(sample, sample.Latency)
+	if sample.Endpoint != "" {
+		if s.byEndpoint == nil {
+			s.byEndpoint = map[string]*latencyStats{}
+		}
+		if s.byEndpoint[sample.Endpoint] == nil {
+			s.byEndpoint[sample.Endpoint] = &latencyStats{}
+		}
+		s.byEndpoint[sample.Endpoint].AddSample(sample, sample.Latency)
+	}
 	s.resultCounts.AddSample(sample)
 	s.timeline.AddSample(sample)
 }

@@ -139,6 +139,27 @@ probe does, then weights the load by the log's per-target frequencies. Seed the
 store from the same model the log was captured against, so the log's
 `user`/`object` IDs resolve. Malformed lines are reported and skipped.
 
+## Blend Several Endpoints
+
+```yaml
+load:
+  endpoint:
+    check: 70
+    list-objects: 20
+    batch-check: 10
+```
+
+Real services rarely call one endpoint. Give `load.endpoint` a weighted mapping
+and each request picks an endpoint by weight, so a single run measures the
+contention `check`, `batch-check`, and the list calls create when they share
+the server. The findings gain a **Per-endpoint breakdown** — one row per
+endpoint with its share and own percentiles — and the results JSON adds
+`endpoint_mix` and `by_endpoint`. Read each endpoint's row against its own
+expectations (a `list-objects` call does far more work than a `check`); the
+point of the blend is to see whether one endpoint's load degrades another's
+tail. Weights are relative, so `{check: 7, list-objects: 2, batch-check: 1}` is
+the same mix. A single-endpoint run is unchanged.
+
 ## Reproduce a Noisy Run
 
 ```yaml

@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 )
 
@@ -110,6 +112,7 @@ func buildMergedReport(paths []string, generatedAt time.Time) (*Report, error) {
 		TotalChecks:       totalChecks,
 		Mismatches:        mismatches,
 		Throughput:        throughput,
+		EndpointMix:       base.EndpointMix,
 		ByTarget:          map[string]Stats{},
 		DSQueriesByTarget: base.DSQueriesByTarget,
 		ErrorsByClass:     errorsByClass,
@@ -137,6 +140,12 @@ func buildMergedReport(paths []string, generatedAt time.Time) (*Report, error) {
 	merged.NoContextual = stats.noContextual.Stats()
 	for target, ss := range stats.byTarget {
 		merged.ByTarget[target] = ss.Stats()
+	}
+	if len(stats.byEndpoint) > 1 {
+		merged.ByEndpoint = map[string]Stats{}
+		for endpoint, ss := range stats.byEndpoint {
+			merged.ByEndpoint[endpoint] = ss.Stats()
+		}
 	}
 	merged.ResultCounts = stats.resultCounts.Stats()
 	merged.Timeline = stats.timeline.Buckets()
@@ -170,6 +179,7 @@ func checkMergeCompatible(pathA string, a *Report, pathB string, b *Report) erro
 	}{
 		{"api_url", a.APIURL, b.APIURL},
 		{"endpoint", a.Endpoint, b.Endpoint},
+		{"endpoint_mix", endpointMixKey(a), endpointMixKey(b)},
 		{"transport", normalizedTransport(a), normalizedTransport(b)},
 		{"consistency", a.Consistency, b.Consistency},
 		{"warmup", a.Warmup, b.Warmup},
@@ -194,6 +204,20 @@ func checkMergeCompatible(pathA string, a *Report, pathB string, b *Report) erro
 		}
 	}
 	return nil
+}
+
+// endpointMixKey canonicalizes a report's endpoint blend so two merge inputs
+// must share the same shape; empty for single-endpoint reports.
+func endpointMixKey(r *Report) string {
+	if len(r.EndpointMix) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(r.EndpointMix))
+	for _, s := range r.EndpointMix {
+		parts = append(parts, fmt.Sprintf("%s=%g", s.Endpoint, s.Weight))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
 }
 
 func normalizedTransport(r *Report) string {

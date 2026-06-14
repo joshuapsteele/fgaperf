@@ -194,7 +194,7 @@ replay:
 
 | Field | Default | Description |
 |---|---|---|
-| `load.endpoint` | `check` | `check` (one tuple per HTTP request), `batch-check` (many per request), `list-objects` ("which objects of a type can this user access?"), or `list-users` ("which users can access this object?"). The list endpoints reuse the corpus's (user, relation, object) triples and add a result-set-size distribution to the findings; their `verify_results` is a best-effort spot-check (each entry's own object/user should appear in its own listing) that can false-positive under OpenFGA's result-cap truncation. |
+| `load.endpoint` | `check` | `check` (one tuple per HTTP request), `batch-check` (many per request), `list-objects` ("which objects of a type can this user access?"), or `list-users` ("which users can access this object?"). The list endpoints reuse the corpus's (user, relation, object) triples and add a result-set-size distribution to the findings; their `verify_results` is a best-effort spot-check (each entry's own object/user should appear in its own listing) that can false-positive under OpenFGA's result-cap truncation. Also accepts a **weighted blend** (the YAML mapping form) — see [Mixed-endpoint workloads](#mixed-endpoint-workloads) below. |
 | `load.transport` | `http` | Wire protocol for the **measured phase**: `http` (REST + JSON) or `grpc`. gRPC is OpenFGA's lower-overhead production path; switching removes the HTTP+JSON serialization cost from the client-side numbers, so the run measures closer to what the server actually costs. Setup and probe always use HTTP; only the load loop varies. gRPC dials `openfga.grpc_url` (default `host:8081`) over a single tuned connection. All four endpoints work over either transport. |
 | `load.batch_size` | `20` | Tuples per `batch-check` request. Ignored for `check`. |
 | `load.concurrency` | `16` | Parallel workers issuing requests. Cap by the concurrency of your real callers. |
@@ -226,6 +226,37 @@ replay:
 - **Sweep**: automates the rate search. The report headlines the
   **saturation knee** — the highest step that kept up (and stayed under
   `slo_p99` if set).
+
+### Mixed-endpoint workloads
+
+A run is single-endpoint by default, but real services blend `check`,
+`batch-check`, and the list calls against one server. To measure that shared
+contention in a single run, give `load.endpoint` a weighted mapping instead of
+a name:
+
+```yaml
+load:
+  endpoint:
+    check: 70
+    list-objects: 20
+    batch-check: 10
+```
+
+Each worker picks an endpoint per request by weight (the weights are relative,
+not percentages — `{check: 7, list-objects: 2, batch-check: 1}` is the same
+blend). The findings then add a **Per-endpoint breakdown** section with one row
+per endpoint — its configured share and its own latency percentiles — and the
+results JSON carries `endpoint_mix` plus a `by_endpoint` split (and matching
+`by_endpoint` digest sketches, so mixed runs still merge across clients).
+
+Latency is not comparable across endpoints — a `list-objects` call resolves far
+more than a single `check` — so read each row against its own expectations; the
+value of the blend is seeing whether one endpoint's traffic inflates another's
+tail. Headline throughput counts every served item (a `batch-check` of 20
+counts as 20), so it reads as a blended "requests/sec". A single-endpoint run
+(or a one-entry mapping) emits none of these extra fields, staying
+byte-identical to before. The `-endpoint` CLI flag sets a single endpoint only;
+use the config mapping for a blend.
 
 ### Soak runs and interim reports
 

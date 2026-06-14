@@ -400,12 +400,20 @@ func writeLoad(b *strings.Builder) {
 # load: how the corpus is replayed
 # ---------------------------------------------------------------------------
 load:
-  # check     = one (user, relation, object) per HTTP request.
+  # check       = one (user, relation, object) per HTTP request.
   # batch-check = many tuples per request; trades per-request HTTP overhead
-  # for higher per-tuple throughput when your callers naturally batch.
+  #   for higher per-tuple throughput when your callers naturally batch.
+  # list-objects / list-users = enumerate the allowed set instead of a yes/no.
+  # endpoint also accepts a weighted blend so one run measures the contention
+  # real services see when several endpoints share the server; the report then
+  # splits percentiles per endpoint. For example:
+  #   endpoint:
+  #     check: 70
+  #     list-objects: 20
+  #     batch-check: 10
   endpoint: check
 
-  # Items per batch-check request. Ignored when endpoint=check.
+  # Items per batch-check request. Ignored unless batch-check is in the mix.
   batch_size: 20
 
   # Parallel workers issuing requests. Cap by how many concurrent Check

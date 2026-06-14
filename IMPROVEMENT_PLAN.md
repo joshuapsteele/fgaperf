@@ -466,7 +466,39 @@ always).
 Acceptance: `fgaperf run` writes a self-contained HTML that renders the sweep
 curve, timeline, and per-relation latency offline (no external fetches).
 
-### 12. Mixed-endpoint workloads
+### 12. Mixed-endpoint workloads ✅
+
+Status: **Complete** (2026-06-14) — `load.endpoint` now accepts a weighted
+blend (the YAML mapping form `{check: 70, list-objects: 20, batch-check: 10}`)
+alongside the scalar form. A new `EndpointMix` type (`config.go`) parses both,
+sorts the blend by endpoint name for deterministic picking, and marshals a
+single endpoint back as a scalar so single-endpoint resolved-config output stays
+byte-identical. The load worker dispatches per request through a small weighted
+`endpointPicker` (`load.go`, the `corpusPicker` pattern); a single-endpoint mix
+returns its lone endpoint **without consuming an rng draw**, so single-endpoint
+corpus selection — and the determinism contract — is unchanged. Each `Sample`
+carries its `Endpoint`; `loadStats` gains a `byEndpoint` split (`digest.go`)
+that only surfaces when more than one endpoint ran. The report adds
+`endpoint_mix` (configured shares) and a `by_endpoint` percentile split plus
+matching mergeable digest sketches, rendered as a "Per-endpoint breakdown"
+section in Markdown and HTML and a `mixed (check 70%, ...)` config-table row;
+headline throughput reads as blended "requests/sec". `fgaperf merge` sums the
+per-endpoint counts and rejects inputs with different blends. When the run is
+single-endpoint, every new field is omitted and the results JSON, findings
+Markdown (golden unchanged), and sample file are byte-identical. The `-endpoint`
+flag still sets a single endpoint; the blend is config-only. Verification:
+`go vet ./...`; `go test -race ./...` (`endpoint_mix_test.go`: scalar/mapping
+parse + resolved round-trip, validation of bad names/weights/duplicates, the
+weighted picker's share + single-endpoint no-draw determinism, an httptest mixed
+run asserting all endpoints exercised at their shares with per-endpoint stats +
+digest round-trip, and single-endpoint omission; `merge_test.go`: two same-blend
+reports merge with summed per-endpoint counts and different blends are rejected);
+end-to-end against the local compose stack — a 60/25/15 check/list-objects/
+batch-check blend exercised all three at their configured shares (achieved
+60.2%/24.4%/15.5%), 0 errors, with the per-endpoint breakdown in the Markdown
+and HTML reports. Docs: README config table + findings-sections table,
+configuration-reference "Mixed-endpoint workloads" subsection, a recipes entry,
+and commented blocks in `examples/config.yaml` and `gen-config` output.
 
 Motivation: real services blend `check`, `batch-check`, and list calls; a run is
 single-endpoint today, so blended contention is unmeasurable.

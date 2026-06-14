@@ -106,7 +106,7 @@ func TestGRPCClientRunsAllEndpoints(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg.Load.Transport = "grpc"
-			cfg.Load.Endpoint = endpoint
+			cfg.Load.Endpoint = singleEndpointMix(endpoint)
 			cfg.Load.Concurrency = 2
 			cfg.Load.Warmup = 20 * time.Millisecond
 			cfg.Load.Duration = 80 * time.Millisecond

@@ -324,7 +324,7 @@ func TestApplyOverrides(t *testing.T) {
 	if err := cfg.applyOverrides(Overrides{Duration: &dur, Rate: &rate, ClientID: &clientID, Endpoint: &endpoint, OutputDir: &out}); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Load.Duration != dur || cfg.Load.Rate != rate || cfg.Load.ClientID != clientID || cfg.Load.Endpoint != endpoint || cfg.OutputDir != out {
+	if cfg.Load.Duration != dur || cfg.Load.Rate != rate || cfg.Load.ClientID != clientID || cfg.Load.Endpoint.Label() != endpoint || cfg.OutputDir != out {
 		t.Errorf("overrides not applied: %+v", cfg.Load)
 	}
 	if cfg.Load.Warmup == 0 || cfg.Load.Consistency == "" {

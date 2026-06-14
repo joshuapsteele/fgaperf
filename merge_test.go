@@ -106,6 +106,49 @@ func TestMergeRejectsIncompatibleReports(t *testing.T) {
 	}
 }
 
+// Two mixed-endpoint reports with the same blend merge into one whose
+// per-endpoint counts are the sum of the inputs; two different blends are
+// rejected.
+func TestMergeMixedEndpointReports(t *testing.T) {
+	dir := t.TempDir()
+	start := time.Date(2026, 1, 2, 15, 4, 0, 0, time.UTC)
+	a := mergeFixtureMixedReport(1, start)
+	b := mergeFixtureMixedReport(2, start.Add(10*time.Millisecond))
+	pathA := writeReportFixture(t, dir, "a.json", a)
+	pathB := writeReportFixture(t, dir, "b.json", b)
+
+	merged, err := buildMergedReport([]string{pathA, pathB}, start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged.Endpoint != "mixed" {
+		t.Fatalf("merged endpoint = %q, want mixed", merged.Endpoint)
+	}
+	if len(merged.ByEndpoint) != 2 {
+		t.Fatalf("merged ByEndpoint = %+v, want 2 endpoints", merged.ByEndpoint)
+	}
+	// Each input contributed one check sample and one batch sample.
+	if got := merged.ByEndpoint["check"].Count; got != 2 {
+		t.Errorf("merged check count = %d, want 2", got)
+	}
+	if got := merged.ByEndpoint["batch-check"].Count; got != 2 {
+		t.Errorf("merged batch-check count = %d, want 2", got)
+	}
+	if len(merged.EndpointMix) != 2 {
+		t.Errorf("merged EndpointMix = %+v, want 2 shares", merged.EndpointMix)
+	}
+
+	// A report blended differently is not comparable.
+	c := mergeFixtureMixedReport(3, start)
+	c.EndpointMix = []EndpointShare{{"check", 90, 90}, {"batch-check", 10, 10}}
+	pathC := writeReportFixture(t, dir, "c.json", c)
+	if _, err := buildMergedReport([]string{pathA, pathC}, start); err == nil {
+		t.Fatal("merged reports with different endpoint blends")
+	} else if !strings.Contains(err.Error(), "endpoint_mix differs") {
+		t.Fatalf("error did not name the endpoint_mix mismatch: %v", err)
+	}
+}
+
 func TestClientIDChangesLoadRunSeed(t *testing.T) {
 	a, _ := LoadConfigFile("")
 	b, _ := LoadConfigFile("")
@@ -163,6 +206,43 @@ func mergeFixtureReport(clientID, concurrency, rate int, achieved float64, start
 			"load":        map[string]any{"client_id": clientID, "concurrency": concurrency, "rate": rate},
 			"random_seed": 42,
 		},
+	}
+}
+
+func mergeFixtureMixedReport(clientID int, start time.Time) *Report {
+	st := newLoadStats()
+	st.AddSample(Sample{Target: "document#viewer", Endpoint: "check", Latency: time.Millisecond, Completed: start, Items: 1, ResultCount: -1})
+	st.AddSample(Sample{Target: "batch", Endpoint: "batch-check", Latency: 2 * time.Millisecond, Completed: start.Add(time.Millisecond), Items: 5, ResultCount: -1})
+	byTarget := map[string]Stats{}
+	for target, ss := range st.byTarget {
+		byTarget[target] = ss.Stats()
+	}
+	byEndpoint := map[string]Stats{}
+	for ep, ss := range st.byEndpoint {
+		byEndpoint[ep] = ss.Stats()
+	}
+	return &Report{
+		GeneratedAt:    start,
+		ToolVersion:    toolVersion,
+		APIURL:         "http://localhost:8080",
+		Endpoint:       "mixed",
+		EndpointMix:    []EndpointShare{{"batch-check", 50, 50}, {"check", 50, 50}},
+		Consistency:    "MINIMIZE_LATENCY",
+		Concurrency:    4,
+		ClientID:       clientID,
+		Warmup:         "1s",
+		Duration:       "10s",
+		MeasuredWindow: "10s",
+		TupleCount:     10,
+		CorpusSize:     5,
+		CorpusDistinct: 5,
+		TotalChecks:    6,
+		Throughput:     6,
+		Overall:        st.overall.Stats(),
+		ByTarget:       byTarget,
+		ByEndpoint:     byEndpoint,
+		Digests:        reportDigestsFromLoadStats(st, false),
+		ResolvedConfig: map[string]any{"random_seed": 42},
 	}
 }
 

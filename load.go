@@ -26,6 +26,7 @@ import (
 
 type Sample struct {
 	Target      string
+	Endpoint    string // which endpoint served this sample; only varies in a mixed-endpoint run
 	Conditioned bool
 	Contextual  bool
 	Latency     time.Duration // service latency: request start -> response
@@ -268,12 +269,50 @@ func (p *corpusPicker) pick(rng *rand.Rand) *CorpusEntry {
 	return &p.entries[g[rng.Intn(len(g))]]
 }
 
+// endpointPicker chooses an endpoint per request by weight for mixed-endpoint
+// runs (config load.endpoint as a weighted mapping). A single-endpoint mix
+// returns the lone endpoint without consuming an rng draw, so single-endpoint
+// corpus selection — and the determinism contract — is unchanged.
+type endpointPicker struct {
+	single   string
+	isSingle bool
+	names    []string
+	cum      []float64 // cumulative weights aligned with names
+	total    float64
+}
+
+func newEndpointPicker(m EndpointMix) *endpointPicker {
+	if name, ok := m.Single(); ok {
+		return &endpointPicker{single: name, isSingle: true}
+	}
+	p := &endpointPicker{}
+	for _, w := range m.Weights {
+		p.total += w.Weight
+		p.names = append(p.names, w.Endpoint)
+		p.cum = append(p.cum, p.total)
+	}
+	return p
+}
+
+func (p *endpointPicker) pick(rng *rand.Rand) string {
+	if p.isSingle {
+		return p.single
+	}
+	x := rng.Float64() * p.total
+	i := sort.SearchFloat64s(p.cum, x)
+	if i >= len(p.names) {
+		i = len(p.names) - 1
+	}
+	return p.names[i]
+}
+
 // SampleRecord is one line of the optional raw sample export — enough for a
 // user to redo the latency analysis their own way without re-running the load.
 // Only measured-phase samples are written (warmup is excluded upstream).
 type SampleRecord struct {
 	T             int64  `json:"t_ns"` // completion time, unix nanoseconds
 	Target        string `json:"target"`
+	Endpoint      string `json:"endpoint,omitempty"`     // mixed-endpoint runs only; "" = single-endpoint run
 	OfferedRate   int    `json:"offered_rate,omitempty"` // sweep step / fixed rate; 0 = closed loop
 	LatencyNs     int64  `json:"latency_ns"`
 	RespLatencyNs int64  `json:"resp_latency_ns,omitempty"`
@@ -294,6 +333,9 @@ type sampleWriter struct {
 	f   *os.File
 	gz  *gzip.Writer
 	enc *json.Encoder
+	// recordEndpoint emits each sample's endpoint; set only for mixed-endpoint
+	// runs so single-endpoint export stays byte-identical.
+	recordEndpoint bool
 }
 
 func newSampleWriter(path string, appendMode bool) (*sampleWriter, error) {
@@ -340,9 +382,14 @@ func (w *sampleWriter) write(s Sample, offeredRate int) error {
 	if s.ResultCount >= 0 {
 		rc = &s.ResultCount
 	}
+	endpoint := ""
+	if w.recordEndpoint {
+		endpoint = s.Endpoint
+	}
 	return w.enc.Encode(&SampleRecord{
 		T:             s.Completed.UnixNano(),
 		Target:        s.Target,
+		Endpoint:      endpoint,
 		OfferedRate:   offeredRate,
 		LatencyNs:     s.Latency.Nanoseconds(),
 		RespLatencyNs: s.RespLatency.Nanoseconds(),
@@ -457,8 +504,9 @@ func RunLoad(client LoadClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 		return nil, fmt.Errorf("corpus is empty; run probe first")
 	}
 	lc := cfg.Load
+	epPicker := newEndpointPicker(lc.Endpoint)
 	res := &LoadResult{
-		Endpoint:    lc.Endpoint,
+		Endpoint:    lc.Endpoint.Label(),
 		Transport:   lc.Transport,
 		Consistency: lc.Consistency,
 		Concurrency: lc.Concurrency,
@@ -478,6 +526,7 @@ func RunLoad(client LoadClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 		if err != nil {
 			return fmt.Errorf("opening sample_file %q: %w", samplePath, err)
 		}
+		w.recordEndpoint = !epPicker.isSingle
 		sw = w
 		return nil
 	}
@@ -626,8 +675,9 @@ func RunLoad(client LoadClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 					continue
 				}
 			}
+			endpoint := epPicker.pick(rng)
 			var s Sample
-			switch lc.Endpoint {
+			switch endpoint {
 			case "batch-check":
 				s = doBatch(client, picker, mism, corpus, cfg, rng)
 			case "list-objects":
@@ -637,6 +687,7 @@ func RunLoad(client LoadClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 			default:
 				s = doCheck(client, picker, mism, corpus, cfg, rng)
 			}
+			s.Endpoint = endpoint
 			if !intended.IsZero() {
 				s.RespLatency = s.Completed.Sub(intended)
 			}

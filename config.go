@@ -10,6 +10,7 @@ import (
 	"io"
 	"math/rand"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -136,6 +137,118 @@ func (t *TargetSpec) UnmarshalYAML(node *yaml.Node) error {
 	return nil
 }
 
+// validEndpoints are the read endpoints fgaperf can drive under load.
+var validEndpoints = map[string]bool{
+	"check":        true,
+	"batch-check":  true,
+	"list-objects": true,
+	"list-users":   true,
+}
+
+// EndpointMix is the load.endpoint knob. In YAML it is either a single endpoint
+// name — the scalar form `endpoint: check`, the default and the historical
+// behavior — or a weighted blend — the mapping form
+// `endpoint: {check: 70, list-objects: 30}`. A blended run picks one endpoint
+// per request by weight, so a single run measures the contention real services
+// see when check, batch-check, and the list calls share the server; the report
+// then splits percentiles per endpoint.
+type EndpointMix struct {
+	// Weights is the parsed set, sorted by endpoint name for deterministic
+	// per-request picking and stable output. A single-endpoint mix holds one
+	// entry with weight 1.
+	Weights []EndpointWeight
+	// scalar records that the YAML was a bare string, so MarshalYAML round-trips
+	// it back to a scalar — single-endpoint resolved-config output stays
+	// byte-identical to before this knob learned the mapping form.
+	scalar bool
+}
+
+// EndpointWeight pairs an endpoint with its relative traffic share.
+type EndpointWeight struct {
+	Endpoint string
+	Weight   float64
+}
+
+func singleEndpointMix(name string) EndpointMix {
+	return EndpointMix{Weights: []EndpointWeight{{Endpoint: name, Weight: 1}}, scalar: true}
+}
+
+// Single returns the lone endpoint name when the mix names exactly one
+// endpoint (the common path), so callers can skip the weighted pick.
+func (m EndpointMix) Single() (string, bool) {
+	if len(m.Weights) == 1 {
+		return m.Weights[0].Endpoint, true
+	}
+	return "", false
+}
+
+// Label is the headline endpoint name used in reports: the single endpoint, or
+// "mixed" for a blend.
+func (m EndpointMix) Label() string {
+	if name, ok := m.Single(); ok {
+		return name
+	}
+	return "mixed"
+}
+
+// String is the compact log form: the single endpoint, or a sorted
+// "name:weight" list for a blend.
+func (m EndpointMix) String() string {
+	if name, ok := m.Single(); ok {
+		return name
+	}
+	parts := make([]string, 0, len(m.Weights))
+	for _, w := range m.Weights {
+		parts = append(parts, fmt.Sprintf("%s:%g", w.Endpoint, w.Weight))
+	}
+	return strings.Join(parts, ",")
+}
+
+func (m *EndpointMix) UnmarshalYAML(node *yaml.Node) error {
+	switch node.Kind {
+	case yaml.ScalarNode:
+		m.Weights = []EndpointWeight{{Endpoint: node.Value, Weight: 1}}
+		m.scalar = true
+		return nil
+	case yaml.MappingNode:
+		seen := map[string]bool{}
+		var weights []EndpointWeight
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			name := node.Content[i].Value
+			if seen[name] {
+				return fmt.Errorf("load.endpoint lists %q more than once", name)
+			}
+			seen[name] = true
+			var weight float64
+			if err := node.Content[i+1].Decode(&weight); err != nil {
+				return fmt.Errorf("load.endpoint weight for %q must be a number: %w", name, err)
+			}
+			weights = append(weights, EndpointWeight{Endpoint: name, Weight: weight})
+		}
+		// Sort by name so picking and output are independent of YAML key order.
+		sort.Slice(weights, func(i, j int) bool { return weights[i].Endpoint < weights[j].Endpoint })
+		m.Weights = weights
+		m.scalar = false
+		return nil
+	default:
+		return fmt.Errorf("load.endpoint must be an endpoint name or a weighted mapping of endpoints")
+	}
+}
+
+func (m EndpointMix) MarshalYAML() (any, error) {
+	if name, ok := m.Single(); ok && m.scalar {
+		return name, nil
+	}
+	if len(m.Weights) == 0 {
+		return "", nil
+	}
+	out := make(map[string]float64, len(m.Weights))
+	for _, w := range m.Weights {
+		out[w.Endpoint] = w.Weight
+	}
+	return out, nil
+}
+
 // ReplayConfig points the corpus builder at a real check log when
 // corpus_source is "replay". The file is a JSONL of OpenFGA check requests —
 // one {user, relation, object[, contextual_tuples, context]} object per line —
@@ -154,7 +267,7 @@ type LoadConfig struct {
 	Duration       time.Duration `yaml:"duration"`
 	Repeat         int           `yaml:"repeat"`          // number of independent measured runs to execute; 1 = normal single result
 	Consistency    string        `yaml:"consistency"`     // MINIMIZE_LATENCY | HIGHER_CONSISTENCY
-	Endpoint       string        `yaml:"endpoint"`        // check | batch-check | list-objects | list-users
+	Endpoint       EndpointMix   `yaml:"endpoint"`        // a single endpoint name or a weighted blend of check | batch-check | list-objects | list-users
 	BatchSize      int           `yaml:"batch_size"`      // for batch-check
 	VerifyResults  bool          `yaml:"verify_results"`  // compare allowed against probe expectations
 	WriteRate      int           `yaml:"write_rate"`      // background tuple writes/sec during the measured phase; 0 = none
@@ -329,10 +442,16 @@ func (c *Config) validate() error {
 	default:
 		return fmt.Errorf("load.consistency must be MINIMIZE_LATENCY or HIGHER_CONSISTENCY, got %q", c.Load.Consistency)
 	}
-	switch c.Load.Endpoint {
-	case "check", "batch-check", "list-objects", "list-users":
-	default:
-		return fmt.Errorf("load.endpoint must be check, batch-check, list-objects, or list-users, got %q", c.Load.Endpoint)
+	if len(c.Load.Endpoint.Weights) == 0 {
+		return fmt.Errorf("load.endpoint must name at least one endpoint")
+	}
+	for _, ew := range c.Load.Endpoint.Weights {
+		if !validEndpoints[ew.Endpoint] {
+			return fmt.Errorf("load.endpoint must be check, batch-check, list-objects, or list-users, got %q", ew.Endpoint)
+		}
+		if ew.Weight <= 0 {
+			return fmt.Errorf("load.endpoint weight for %q must be positive, got %v", ew.Endpoint, ew.Weight)
+		}
 	}
 	switch c.Load.Arrival {
 	case "uniform", "poisson":
@@ -710,7 +829,9 @@ func (c *Config) applyDefaults(fields yamlFieldSet) {
 	}
 	defInt(&c.Load.Repeat, 1, "load", "repeat")
 	def(&c.Load.Consistency, "MINIMIZE_LATENCY")
-	def(&c.Load.Endpoint, "check")
+	if len(c.Load.Endpoint.Weights) == 0 {
+		c.Load.Endpoint = singleEndpointMix("check")
+	}
 	def(&c.Load.Arrival, "uniform")
 	def(&c.Load.Transport, "http")
 	defInt(&c.Load.BatchSize, 20, "load", "batch_size")
@@ -765,7 +886,9 @@ func (c *Config) applyOverrides(o Overrides) error {
 		c.Load.Repeat = *o.Repeat
 	}
 	if o.Endpoint != nil {
-		c.Load.Endpoint = *o.Endpoint
+		// The -endpoint flag sets a single endpoint; use the config mapping form
+		// for a weighted blend.
+		c.Load.Endpoint = singleEndpointMix(*o.Endpoint)
 	}
 	if o.Consistency != nil {
 		c.Load.Consistency = *o.Consistency

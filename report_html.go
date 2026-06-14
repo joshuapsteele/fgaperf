@@ -58,7 +58,11 @@ func (r *Report) HTML() string {
 	w("<p class=\"summary\">%s</p>", htmlText(r.summary()))
 	w("<dl class=\"run-meta\">")
 	htmlMeta(&b, "Generated", r.GeneratedAt.Format("2006-01-02 15:04 UTC"))
-	htmlMeta(&b, "Endpoint", r.Endpoint)
+	if len(r.EndpointMix) > 0 {
+		htmlMeta(&b, "Endpoint", endpointMixSentence(r.EndpointMix))
+	} else {
+		htmlMeta(&b, "Endpoint", r.Endpoint)
+	}
 	htmlMeta(&b, "Transport", transport)
 	htmlMeta(&b, "Mode", rateMode)
 	htmlMeta(&b, "Concurrency", fmt.Sprintf("%d workers", r.Concurrency))
@@ -131,6 +135,41 @@ func (r *Report) HTML() string {
 	w("</table>")
 	w("</div>")
 	w("</section>")
+
+	if len(r.ByEndpoint) > 0 {
+		shareByEndpoint := map[string]float64{}
+		for _, s := range r.EndpointMix {
+			shareByEndpoint[s.Endpoint] = s.Share
+		}
+		w("<section class=\"section\">")
+		w("<h2>Per-endpoint breakdown</h2>")
+		w("<p>How each blended endpoint fared under the shared load. Latency is not comparable across endpoints; read each row against its own expectations.</p>")
+		w("<div class=\"table-wrap\">")
+		w("<table>")
+		w("<thead><tr><th>Endpoint</th><th>Share</th><th>Requests</th><th>Errors</th><th>Mean</th><th>p50</th><th>p95</th><th>p99</th></tr></thead>")
+		w("<tbody>")
+		endpoints := make([]string, 0, len(r.ByEndpoint))
+		for ep := range r.ByEndpoint {
+			endpoints = append(endpoints, ep)
+		}
+		sort.Strings(endpoints)
+		for _, ep := range endpoints {
+			s := r.ByEndpoint[ep]
+			if s.Count == 0 && s.Errors == 0 {
+				continue
+			}
+			share := ""
+			if v, ok := shareByEndpoint[ep]; ok {
+				share = fmt.Sprintf("%.0f%%", v)
+			}
+			w("<tr><td><code>%s</code></td><td>%s</td><td>%d</td><td>%d</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>",
+				htmlText(ep), htmlText(share), s.Count, s.Errors, ms(s.Mean), ms(s.P50), ms(s.P95), ms(s.P99))
+		}
+		w("</tbody>")
+		w("</table>")
+		w("</div>")
+		w("</section>")
+	}
 
 	if len(r.Sweep) > 0 {
 		w("<section class=\"section\">")
