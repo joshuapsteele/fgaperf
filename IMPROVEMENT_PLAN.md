@@ -396,6 +396,23 @@ Acceptance: a multi-minute run emits interim reports at the configured cadence
 with flat memory; the final report covers the whole window; timeline rows stay
 ~12 regardless of duration.
 
+Implemented 2026-06-14: added `load.report_interval` for long single-rate
+soaks. During the measured phase, `RunLoad` emits cumulative
+`interim-results-*` / `interim-findings-*` snapshots from the streaming digest
+aggregates at the configured cadence, while the normal final report remains the
+whole-window source of truth. When `load.sample_file` is set, the first interval
+uses the configured path and subsequent intervals rotate to numbered chunks
+(`samples-002.jsonl[.gz]`, ...). `load.report_interval` is rejected with
+`load.sweep` to avoid mixing sweep append semantics with rotation. Timeline
+bucket widths now widen through multi-minute/hour buckets so multi-hour soak
+reports stay roughly a dozen rows.
+
+Acceptance evidence: `go test ./...` (with `GOCACHE=/tmp/fgaperf-go-build`)
+covers config validation, timeline width expansion, bounded timeline
+accumulator buckets for a two-hour window, sample segment naming, and a short
+local load run that writes interim reports, rotates samples, keeps raw samples
+out of memory, and preserves the aggregate sample count across chunks.
+
 ### 10. Statistical significance in `compare`
 
 Motivation: a p99 delta between two single runs may be noise. Today `compare`

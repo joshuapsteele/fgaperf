@@ -90,3 +90,26 @@ func relDurationDiff(got, want time.Duration) float64 {
 	}
 	return math.Abs(float64(got-want)) / float64(want)
 }
+
+func TestTimelineAccumulatorWidensForLongRuns(t *testing.T) {
+	var acc timelineStatsAccumulator
+	start := time.Unix(0, 0)
+	for i := 0; i <= 2*60*60; i++ {
+		acc.AddSample(Sample{
+			Target:      "document#viewer",
+			Latency:     time.Millisecond,
+			Completed:   start.Add(time.Duration(i) * time.Second),
+			Items:       1,
+			ResultCount: -1,
+		})
+	}
+	if got, want := acc.effectiveQuantum(), 10*time.Minute; got != want {
+		t.Fatalf("timeline quantum = %v, want %v", got, want)
+	}
+	if got := len(acc.buckets); got > 13 {
+		t.Fatalf("timeline retained %d buckets for a 2h run, want <= 13", got)
+	}
+	if got := len(acc.Buckets()); got > 13 {
+		t.Fatalf("rendered timeline has %d rows for a 2h run, want <= 13", got)
+	}
+}

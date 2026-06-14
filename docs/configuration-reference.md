@@ -202,10 +202,11 @@ replay:
 | `load.rate` | `0` | Fixed offered requests/sec. `0` = closed loop. Mutually exclusive with `load.sweep`. |
 | `load.warmup` | `10s` | Leading slice discarded so caches/connections steady-state before measurement. |
 | `load.duration` | `60s` | Measured window after warmup. |
+| `load.report_interval` | unset | For long single-rate soaks, emit cumulative `interim-results-*` and `interim-findings-*` snapshots at this cadence while the final report still covers the whole measured window. Mutually exclusive with `load.sweep`. |
 | `load.consistency` | `MINIMIZE_LATENCY` | `MINIMIZE_LATENCY` (uses caches) or `HIGHER_CONSISTENCY` (skips them). Pick what your production callers use. |
 | `load.verify_results` | `false` (`true` in example) | Compare each load-time response against the probe-time ground truth and count mismatches. |
 | `load.write_rate` | `0` | Background tuple writes per second during the measured phase. Lets you measure checks under realistic cache-invalidation pressure. `0` = read-only. |
-| `load.sample_file` | unset | Dump one JSON line per measured sample (target, latency, response latency, outcome class, timestamp) for your own analysis. A `.gz` suffix gzips the stream; a sweep's steps all append to one file. Off when unset. |
+| `load.sample_file` | unset | Dump one JSON line per measured sample (target, latency, response latency, outcome class, timestamp) for your own analysis. A `.gz` suffix gzips the stream; a sweep's steps all append to one file. When `load.report_interval` is set, the first interval uses this path and later intervals rotate to numbered chunks such as `samples-002.jsonl.gz`. Off when unset. |
 | `load.sweep.rates` | empty | When set, run a multi-step sweep instead of a single rate. List of offered req/s, e.g. `[200, 500, 1000, 2000]`. Mutually exclusive with `load.rate`. |
 | `load.sweep.step_duration` | `60s` | Measured window per sweep step. Warmup applies once at the start of the sweep, not per step. |
 | `load.slo_p99` | unset | Optional target response-latency p99. A sweep step counts as "passing" only if response p99 stays under this. |
@@ -224,6 +225,27 @@ replay:
 - **Sweep**: automates the rate search. The report headlines the
   **saturation knee** — the highest step that kept up (and stayed under
   `slo_p99` if set).
+
+### Soak runs and interim reports
+
+For leak hunts, cache-eviction cliffs, or datastore compaction checks, use a
+single fixed rate or closed-loop run with a long `load.duration` and set
+`load.report_interval`:
+
+```yaml
+load:
+  duration: 6h
+  report_interval: 5m
+  sample_file: samples.jsonl.gz
+```
+
+Each interval writes a cumulative `interim-results-*` JSON and
+`interim-findings-*` Markdown snapshot based on bounded digest aggregates. The
+final `results-*` / `findings-*` pair is still written at the end and covers
+the whole measured window. If `sample_file` is set, the first interval writes
+that path and later intervals rotate to numbered chunks (`samples-002.jsonl.gz`,
+`samples-003.jsonl.gz`, ...). `report_interval` is for single-rate runs and is
+rejected with `load.sweep`.
 
 ### Distributed load generation
 

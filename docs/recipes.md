@@ -150,6 +150,22 @@ load:
 The same model, config, and `random_seed` regenerate the same tuple graph and
 probe corpus. `sample_file` records raw measured samples for offline analysis.
 
+## Run a Long Soak
+
+```yaml
+load:
+  rate: 500
+  duration: 6h
+  report_interval: 5m
+  sample_file: samples.jsonl.gz
+```
+
+Use one fixed production-like rate for leak hunts, cache-eviction cliffs, and
+datastore compaction checks. `report_interval` writes cumulative interim JSON
+and Markdown reports while the run continues; the final report still covers the
+whole measured window. When `sample_file` is set, each interval writes a
+numbered sample chunk so one raw-sample file does not grow for the full soak.
+
 ## Run Before and After a Server Upgrade
 
 ```yaml

@@ -62,6 +62,9 @@ type Report struct {
 	MismatchFile      string                       `json:"mismatch_file,omitempty"`   // written by Save when mismatches occurred
 	Digests           *ReportDigests               `json:"digests,omitempty"`         // mergeable bounded-memory sketches for distributed aggregation
 	MergedFrom        []MergedInput                `json:"merged_from,omitempty"`
+	Interim           bool                         `json:"interim,omitempty"` // true for in-progress soak snapshots
+	InterimIndex      int                          `json:"interim_index,omitempty"`
+	ReportInterval    string                       `json:"report_interval,omitempty"`
 
 	mismatchRecords []MismatchRecord // written to MismatchFile by Save
 }
@@ -153,18 +156,33 @@ type TimelineBucket struct {
 
 // timelineWidth picks a "nice" bucket width so a run produces roughly a dozen
 // rows regardless of duration: short smoke runs bucket by the second, hour-long
-// runs by the minute.
+// runs by the minute, and multi-hour soaks by five-minute slices.
 func timelineWidth(window time.Duration) time.Duration {
 	if window <= 0 {
 		return time.Second
 	}
 	target := window / 15
-	for _, w := range []time.Duration{time.Second, 2 * time.Second, 5 * time.Second, 10 * time.Second, 15 * time.Second, 30 * time.Second, time.Minute} {
+	for _, w := range []time.Duration{
+		time.Second,
+		2 * time.Second,
+		5 * time.Second,
+		10 * time.Second,
+		15 * time.Second,
+		30 * time.Second,
+		time.Minute,
+		2 * time.Minute,
+		5 * time.Minute,
+		10 * time.Minute,
+		15 * time.Minute,
+		30 * time.Minute,
+		time.Hour,
+		2 * time.Hour,
+	} {
 		if target <= w {
 			return w
 		}
 	}
-	return time.Minute
+	return 2 * time.Hour
 }
 
 // buildTimeline buckets measured samples by completion time, anchored at the
@@ -374,11 +392,19 @@ func BuildReport(res *LoadResult, corpus *Corpus, cfg *Config, tupleCount int, s
 }
 
 func (r *Report) Save(dir string) (string, string, error) {
+	return r.saveWithPatterns(dir, []string{"results-%s.json", "findings-%s.md"}, "mismatches-%s.json")
+}
+
+func (r *Report) SaveInterim(dir string) (string, string, error) {
+	return r.saveWithPatterns(dir, []string{"interim-results-%s.json", "interim-findings-%s.md"}, "interim-mismatches-%s.json")
+}
+
+func (r *Report) saveWithPatterns(dir string, patterns []string, mismatchPattern string) (string, string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", "", err
 	}
 	stamp := r.GeneratedAt.Format("20060102-150405")
-	patterns := []string{"results-%s.json", "findings-%s.md"}
+	patterns = append([]string{}, patterns...)
 	var mmData []byte
 	if len(r.mismatchRecords) > 0 {
 		var err error
@@ -386,7 +412,7 @@ func (r *Report) Save(dir string) (string, string, error) {
 		if err != nil {
 			return "", "", err
 		}
-		patterns = append(patterns, "mismatches-%s.json")
+		patterns = append(patterns, mismatchPattern)
 	}
 	artifacts, err := createArtifactSet(dir, stamp, patterns)
 	if err != nil {
@@ -482,6 +508,14 @@ func (r *Report) Markdown() string {
 	w("Generated %s by fgaperf %s. All latencies in milliseconds, measured client-side over HTTP against %s.",
 		r.GeneratedAt.Format("2006-01-02 15:04 UTC"), r.ToolVersion, r.APIURL)
 	w("")
+	if r.Interim {
+		if r.ReportInterval != "" {
+			w("> Interim soak snapshot #%d. This covers the measured samples seen so far; the final report at run completion remains the authoritative whole-window result. Snapshot cadence: %s.", r.InterimIndex, r.ReportInterval)
+		} else {
+			w("> Interim soak snapshot #%d. This covers the measured samples seen so far; the final report at run completion remains the authoritative whole-window result.", r.InterimIndex)
+		}
+		w("")
+	}
 	w("New to these terms? Jump to the [How to read this](#how-to-read-this) section at the bottom for a per-column legend.")
 	w("")
 	w("## Test configuration")

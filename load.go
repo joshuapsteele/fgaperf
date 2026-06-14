@@ -16,6 +16,7 @@ import (
 	"math/rand"
 	"net"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -318,6 +319,22 @@ func newSampleWriter(path string, appendMode bool) (*sampleWriter, error) {
 	return sw, nil
 }
 
+func sampleSegmentPath(path string, seq int) string {
+	if seq <= 1 || path == "" {
+		return path
+	}
+	dir, name := filepath.Split(path)
+	if strings.HasSuffix(name, ".gz") {
+		base := strings.TrimSuffix(name, ".gz")
+		ext := filepath.Ext(base)
+		stem := strings.TrimSuffix(base, ext)
+		return filepath.Join(dir, fmt.Sprintf("%s-%03d%s.gz", stem, seq, ext))
+	}
+	ext := filepath.Ext(name)
+	stem := strings.TrimSuffix(name, ext)
+	return filepath.Join(dir, fmt.Sprintf("%s-%03d%s", stem, seq, ext))
+}
+
 func (w *sampleWriter) write(s Sample, offeredRate int) error {
 	var rc *int
 	if s.ResultCount >= 0 {
@@ -449,11 +466,52 @@ func RunLoad(client LoadClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 		stats:       newLoadStats(),
 	}
 	var sw *sampleWriter
-	if lc.SampleFile != "" {
-		var err error
-		sw, err = newSampleWriter(lc.SampleFile, lc.sampleAppend)
+	var writeErr error
+	sampleSeq := 1
+	samplePath := sampleSegmentPath(lc.SampleFile, sampleSeq)
+	openSampleWriter := func() error {
+		appendMode := lc.sampleAppend && sampleSeq == 1
+		w, err := newSampleWriter(samplePath, appendMode)
 		if err != nil {
-			return nil, fmt.Errorf("opening sample_file %q: %w", lc.SampleFile, err)
+			return fmt.Errorf("opening sample_file %q: %w", samplePath, err)
+		}
+		sw = w
+		return nil
+	}
+	closeSampleWriter := func() {
+		if sw == nil {
+			return
+		}
+		if err := sw.Close(); err != nil && writeErr == nil {
+			writeErr = fmt.Errorf("closing sample_file %q: %w", samplePath, err)
+		}
+		sw = nil
+	}
+	writeSample := func(s Sample) {
+		if lc.SampleFile == "" || writeErr != nil {
+			return
+		}
+		if sw == nil {
+			if err := openSampleWriter(); err != nil {
+				writeErr = err
+				return
+			}
+		}
+		if err := sw.write(s, lc.Rate); err != nil && writeErr == nil {
+			writeErr = fmt.Errorf("writing sample_file %q: %w", samplePath, err)
+		}
+	}
+	rotateSampleFile := func() {
+		if lc.SampleFile == "" || writeErr != nil {
+			return
+		}
+		closeSampleWriter()
+		sampleSeq++
+		samplePath = sampleSegmentPath(lc.SampleFile, sampleSeq)
+	}
+	if lc.SampleFile != "" {
+		if err := openSampleWriter(); err != nil {
+			return nil, err
 		}
 	}
 
@@ -617,7 +675,54 @@ func RunLoad(client LoadClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 	}()
 	res.ErrorsByClass = map[string]int64{}
 	var firstDone, lastDone time.Time
-	var writeErr error
+	nextInterim := time.Time{}
+	interimSeq := 0
+	if lc.ReportInterval > 0 {
+		nextInterim = warmupEnd.Add(lc.ReportInterval)
+	}
+	emitInterim := func(now time.Time) error {
+		if res.stats.TotalSamples() == 0 {
+			return nil
+		}
+		interimSeq++
+		elapsed := now.Sub(warmupEnd)
+		if elapsed < 0 {
+			elapsed = 0
+		}
+		errorsByClass := make(map[string]int64, len(res.ErrorsByClass))
+		for k, v := range res.ErrorsByClass {
+			errorsByClass[k] = v
+		}
+		snap := &LoadResult{
+			Endpoint:       res.Endpoint,
+			Transport:      res.Transport,
+			Consistency:    res.Consistency,
+			Concurrency:    res.Concurrency,
+			OfferedRate:    res.OfferedRate,
+			Arrival:        res.Arrival,
+			Warmup:         res.Warmup,
+			Duration:       elapsed,
+			WallClock:      now.Sub(start),
+			MeasuredWindow: lastDone.Sub(firstDone),
+			DroppedSlots:   atomic.LoadInt64(&droppedSlots),
+			TotalErrors:    atomic.LoadInt64(&errCount),
+			TotalChecks:    atomic.LoadInt64(&checks),
+			Mismatches:     atomic.LoadInt64(&mismatches),
+			ErrorsByClass:  errorsByClass,
+			ErrorSamples:   append([]string(nil), res.ErrorSamples...),
+			stats:          res.stats,
+		}
+		report := BuildReport(snap, corpus, cfg, lc.interimTupleCount, lc.interimSeedDur)
+		report.Interim = true
+		report.InterimIndex = interimSeq
+		report.ReportInterval = lc.ReportInterval.String()
+		jsonPath, mdPath, err := report.SaveInterim(cfg.OutputDir)
+		if err != nil {
+			return fmt.Errorf("writing interim report: %w", err)
+		}
+		fmt.Printf("interim report %d: wrote %s and %s\n", interimSeq, jsonPath, mdPath)
+		return nil
+	}
 	for s := range sampleCh {
 		progress.add(s)
 		if firstDone.IsZero() || s.Completed.Before(firstDone) {
@@ -640,24 +745,21 @@ func RunLoad(client LoadClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 				res.ErrorSamples = append(res.ErrorSamples, s.ItemErrMsg)
 			}
 		}
-		if sw != nil {
-			if writeErr == nil {
-				if err := sw.write(s, lc.Rate); err != nil {
-					writeErr = fmt.Errorf("writing sample_file %q: %w", lc.SampleFile, err)
-				}
+		writeSample(s)
+		res.stats.AddSample(s)
+		if lc.ReportInterval > 0 && !s.Completed.Before(nextInterim) {
+			if err := emitInterim(s.Completed); err != nil && writeErr == nil {
+				writeErr = err
+			}
+			rotateSampleFile()
+			for !nextInterim.After(s.Completed) {
+				nextInterim = nextInterim.Add(lc.ReportInterval)
 			}
 		}
-		res.stats.AddSample(s)
 	}
 	close(stopProgress)
 	<-progressDone
-	if sw != nil {
-		if err := sw.Close(); err != nil {
-			if writeErr == nil {
-				writeErr = fmt.Errorf("closing sample_file %q: %w", lc.SampleFile, err)
-			}
-		}
-	}
+	closeSampleWriter()
 	<-done
 	<-churnDone // before the after-snapshot so churn writes land inside the server-side diff
 	if churnStats.digest.count+churnStats.errors > 0 {

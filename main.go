@@ -517,6 +517,8 @@ func run(client *FGAClient, cfg *Config, st *State) error {
 		scraper = NewMetricsScraper(cfg.Metrics.PrometheusURL)
 	}
 	seedDur, _ := time.ParseDuration(st.SeedDuration)
+	cfg.Load.interimTupleCount = st.TupleCount
+	cfg.Load.interimSeedDur = seedDur
 	var report *Report
 	if len(cfg.Load.Sweep.Rates) > 0 {
 		results, err := RunSweep(loadClient, corpus, cfg, scraper)

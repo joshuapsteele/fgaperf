@@ -168,6 +168,14 @@ and mismatches, and merges latency percentiles from the digest sketches embedded
 in each results JSON. Sweep reports are not mergeable yet; run one fixed rate
 per client, then merge that rate's result files.
 
+For hours-long stability checks, set a long `load.duration` and a
+`load.report_interval`, for example `duration: 6h` and `report_interval: 5m`.
+During the run, fgaperf writes cumulative `interim-results-*` and
+`interim-findings-*` snapshots so you can watch latency drift without stopping
+the test. The normal final `results-*` / `findings-*` pair still covers the
+whole measured window. If `load.sample_file` is set, sample output rotates into
+numbered chunks at the same cadence.
+
 ### Regression gating
 
 To catch a performance regression automatically — the way unit tests catch a
@@ -295,6 +303,7 @@ long-form reference. The most important knobs are:
 | `load.endpoint` | [`check`](https://openfga.dev/docs/interacting/relationship-queries#check) (one tuple per request), [`batch-check`](https://openfga.dev/docs/interacting/relationship-queries#batch-check) (many per request), [`list-objects`](https://openfga.dev/docs/interacting/relationship-queries#listobjects) ("which objects can this user access?"), or [`list-users`](https://openfga.dev/docs/interacting/relationship-queries#listusers) ("who can access this object?"). The list endpoints reuse the corpus subjects/relations and report a result-set-size distribution; their result verification is a best-effort spot-check. |
 | `load.rate` | Fixed *offered* requests/sec. `0` means closed-loop: workers issue the next request as soon as the previous one returns (used to find max throughput). |
 | `load.sweep.rates`, `load.slo_p99` | Step through several offered rates in one run to find the **saturation knee** — the highest rate the server sustained (achieved ≥ 98% of offered, and response-latency p99 under `slo_p99` when set). Mutually exclusive with `load.rate`. |
+| `load.report_interval` | For long single-rate soaks, write cumulative `interim-results-*` / `interim-findings-*` snapshots during the run while the final report still covers the whole measured window. When `load.sample_file` is set, samples rotate into numbered chunks at the same cadence. Mutually exclusive with `load.sweep`. |
 | `load.write_rate` | Background tuple writes/sec during the measured phase, so checks run against a churning store instead of the read-only best case. Churn tuples only ever link fresh churn-only instances, so `verify_results` stays meaningful. |
 | `load.consistency` | [`MINIMIZE_LATENCY`](https://openfga.dev/docs/interacting/consistency) (cached, fast, may be stale) or `HIGHER_CONSISTENCY` (skips caches; slower, fresh). |
 | `metrics.prometheus_url` | OpenFGA's [Prometheus metrics](https://openfga.dev/docs/getting-started/setup-openfga/configuration) endpoint (the compose stack publishes `http://localhost:2112`). When set, results gain a server-side view: request duration, datastore queries per check, dispatches, cache hit rate — diffed over the measured phase only. On shared OpenFGA deployments, these counters can include unrelated traffic unless the exposed labels let you isolate this run. |

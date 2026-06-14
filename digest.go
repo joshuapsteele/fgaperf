@@ -373,6 +373,7 @@ func (d CountStatsDigest) IsZero() bool {
 type timelineStatsAccumulator struct {
 	anchor  time.Time
 	last    time.Time
+	quantum time.Duration
 	buckets map[int]*latencyStats
 }
 
@@ -391,19 +392,71 @@ func (a *timelineStatsAccumulator) AddSample(s Sample) {
 			a.last = s.Completed
 		}
 	}
-	idx := int(s.Completed.Sub(a.anchor) / timelineQuantum)
+	a.widenForWindow()
+	q := a.effectiveQuantum()
+	idx := int(s.Completed.Sub(a.anchor) / q)
 	if idx < 0 {
 		idx = 0
 	}
 	a.bucket(idx).AddSample(s, s.Latency)
 }
 
+func (a timelineStatsAccumulator) effectiveQuantum() time.Duration {
+	if a.quantum > 0 {
+		return a.quantum
+	}
+	return timelineQuantum
+}
+
+func (a *timelineStatsAccumulator) widenForWindow() {
+	if a.anchor.IsZero() {
+		return
+	}
+	q := timelineAccumulatorQuantum(a.last.Sub(a.anchor))
+	if q > a.effectiveQuantum() {
+		a.setQuantum(q)
+	}
+}
+
+func timelineAccumulatorQuantum(window time.Duration) time.Duration {
+	q := timelineWidth(window)
+	if q < timelineQuantum {
+		return timelineQuantum
+	}
+	return q
+}
+
+func (a *timelineStatsAccumulator) setQuantum(q time.Duration) {
+	oldQ := a.effectiveQuantum()
+	if q <= oldQ {
+		if a.quantum == 0 {
+			a.quantum = oldQ
+		}
+		return
+	}
+	rebucketed := map[int]*latencyStats{}
+	for idx, st := range a.buckets {
+		t := a.anchor.Add(time.Duration(idx) * oldQ)
+		newIdx := int(t.Sub(a.anchor) / q)
+		if newIdx < 0 {
+			newIdx = 0
+		}
+		if rebucketed[newIdx] == nil {
+			rebucketed[newIdx] = &latencyStats{}
+		}
+		rebucketed[newIdx].Merge(*st)
+	}
+	a.quantum = q
+	a.buckets = rebucketed
+}
+
 func (a *timelineStatsAccumulator) rebase(anchor time.Time) {
 	oldAnchor := a.anchor
+	q := a.effectiveQuantum()
 	rebased := map[int]*latencyStats{}
 	for idx, st := range a.buckets {
-		t := oldAnchor.Add(time.Duration(idx) * timelineQuantum)
-		newIdx := int(t.Sub(anchor) / timelineQuantum)
+		t := oldAnchor.Add(time.Duration(idx) * q)
+		newIdx := int(t.Sub(anchor) / q)
 		if newIdx < 0 {
 			newIdx = 0
 		}
@@ -432,6 +485,7 @@ func (a *timelineStatsAccumulator) Merge(other timelineStatsAccumulator) {
 	if a.anchor.IsZero() {
 		a.anchor = other.anchor
 		a.last = other.last
+		a.quantum = other.effectiveQuantum()
 		if len(other.buckets) > 0 {
 			a.buckets = map[int]*latencyStats{}
 			for idx, st := range other.buckets {
@@ -448,9 +502,14 @@ func (a *timelineStatsAccumulator) Merge(other timelineStatsAccumulator) {
 	if other.last.After(a.last) {
 		a.last = other.last
 	}
+	newQuantum := maxDuration(a.effectiveQuantum(), other.effectiveQuantum())
+	newQuantum = maxDuration(newQuantum, timelineAccumulatorQuantum(a.last.Sub(a.anchor)))
+	a.setQuantum(newQuantum)
+	q := a.effectiveQuantum()
+	otherQ := other.effectiveQuantum()
 	for idx, st := range other.buckets {
-		t := other.anchor.Add(time.Duration(idx) * timelineQuantum)
-		newIdx := int(t.Sub(a.anchor) / timelineQuantum)
+		t := other.anchor.Add(time.Duration(idx) * otherQ)
+		newIdx := int(t.Sub(a.anchor) / q)
 		if newIdx < 0 {
 			newIdx = 0
 		}
@@ -463,13 +522,14 @@ func (a timelineStatsAccumulator) Buckets() []TimelineBucket {
 		return nil
 	}
 	width := timelineWidth(a.last.Sub(a.anchor))
-	if width < timelineQuantum {
-		width = timelineQuantum
+	q := a.effectiveQuantum()
+	if width < q {
+		width = q
 	}
 	merged := map[int]*latencyStats{}
 	maxIdx := int(a.last.Sub(a.anchor) / width)
 	for qidx, st := range a.buckets {
-		idx := int(time.Duration(qidx) * timelineQuantum / width)
+		idx := int(time.Duration(qidx) * q / width)
 		if idx < 0 {
 			idx = 0
 		}
@@ -501,6 +561,13 @@ func (a timelineStatsAccumulator) Buckets() []TimelineBucket {
 	return out
 }
 
+func maxDuration(a, b time.Duration) time.Duration {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 type TimelineDigest struct {
 	Anchor    time.Time           `json:"anchor"`
 	Last      time.Time           `json:"last"`
@@ -509,7 +576,7 @@ type TimelineDigest struct {
 }
 
 func timelineDigestFromAccumulator(a timelineStatsAccumulator) TimelineDigest {
-	d := TimelineDigest{Anchor: a.anchor, Last: a.last, QuantumNs: timelineQuantum.Nanoseconds()}
+	d := TimelineDigest{Anchor: a.anchor, Last: a.last, QuantumNs: a.effectiveQuantum().Nanoseconds()}
 	if len(a.buckets) > 0 {
 		d.Buckets = make(map[int]StatsDigest, len(a.buckets))
 		for idx, st := range a.buckets {
@@ -520,7 +587,10 @@ func timelineDigestFromAccumulator(a timelineStatsAccumulator) TimelineDigest {
 }
 
 func (d TimelineDigest) accumulator() timelineStatsAccumulator {
-	a := timelineStatsAccumulator{anchor: d.Anchor, last: d.Last}
+	a := timelineStatsAccumulator{anchor: d.Anchor, last: d.Last, quantum: time.Duration(d.QuantumNs)}
+	if a.quantum <= 0 {
+		a.quantum = timelineQuantum
+	}
 	if len(d.Buckets) > 0 {
 		a.buckets = make(map[int]*latencyStats, len(d.Buckets))
 		for idx, st := range d.Buckets {

@@ -356,6 +356,22 @@ func TestSampleWriterGzipRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSampleSegmentPath(t *testing.T) {
+	cases := map[string]string{
+		"/tmp/samples.jsonl":    "/tmp/samples-002.jsonl",
+		"/tmp/samples.jsonl.gz": "/tmp/samples-002.jsonl.gz",
+		"/tmp/samples":          "/tmp/samples-002",
+	}
+	for path, want := range cases {
+		if got := sampleSegmentPath(path, 2); got != want {
+			t.Errorf("sampleSegmentPath(%q, 2) = %q, want %q", path, got, want)
+		}
+	}
+	if got := sampleSegmentPath("/tmp/samples.jsonl", 1); got != "/tmp/samples.jsonl" {
+		t.Errorf("first segment path changed: %q", got)
+	}
+}
+
 func TestSampleWriterReportsEncodeErrors(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "samples.jsonl")
 	sw, err := newSampleWriter(path, false)
@@ -444,5 +460,90 @@ func TestRunLoadAggregatesWithoutRetainingSamples(t *testing.T) {
 	}
 	if lines != res.loadStats().TotalSamples() {
 		t.Fatalf("sample_file lines = %d, want aggregate sample count %d", lines, res.loadStats().TotalSamples())
+	}
+}
+
+func TestRunLoadInterimReportsAndRotatesSamples(t *testing.T) {
+	client, srv := testClient(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]bool{"allowed": true})
+	})
+	defer srv.Close()
+
+	cfg, err := LoadConfigFile("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	cfg.OutputDir = dir
+	cfg.Load.Concurrency = 1
+	cfg.Load.Warmup = 0
+	cfg.Load.Duration = 90 * time.Millisecond
+	cfg.Load.ReportInterval = 25 * time.Millisecond
+	cfg.Load.SampleFile = filepath.Join(dir, "samples.jsonl")
+	corpus := &Corpus{StoreID: "store", ModelID: "model", Entries: []CorpusEntry{
+		{User: "user:1", Relation: "viewer", Object: "doc:1", Target: "doc#viewer", Expected: true},
+	}}
+
+	res, err := RunLoad(client, corpus, cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.loadStats().TotalSamples() == 0 {
+		t.Fatal("run produced no measured samples")
+	}
+
+	jsonReports, err := filepath.Glob(filepath.Join(dir, "interim-results-*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mdReports, err := filepath.Glob(filepath.Join(dir, "interim-findings-*.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jsonReports) == 0 || len(mdReports) == 0 {
+		t.Fatalf("interim reports not written: json=%v md=%v", jsonReports, mdReports)
+	}
+	data, err := os.ReadFile(jsonReports[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r Report
+	if err := json.Unmarshal(data, &r); err != nil {
+		t.Fatal(err)
+	}
+	if !r.Interim || r.InterimIndex == 0 || r.ReportInterval != cfg.Load.ReportInterval.String() {
+		t.Fatalf("interim metadata missing: interim=%v index=%d interval=%q", r.Interim, r.InterimIndex, r.ReportInterval)
+	}
+	if r.Overall.Count == 0 || r.Digests == nil {
+		t.Fatalf("interim report missing aggregate stats: count=%d digests=%v", r.Overall.Count, r.Digests != nil)
+	}
+
+	sampleFiles, err := filepath.Glob(filepath.Join(dir, "samples*.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sampleFiles) < 2 {
+		t.Fatalf("sample_file was not rotated, got %v", sampleFiles)
+	}
+	var lines int
+	for _, path := range sampleFiles {
+		f, err := os.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sc := bufio.NewScanner(f)
+		for sc.Scan() {
+			lines++
+		}
+		if err := sc.Err(); err != nil {
+			f.Close()
+			t.Fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if lines != res.loadStats().TotalSamples() {
+		t.Fatalf("rotated sample_file lines = %d, want aggregate sample count %d", lines, res.loadStats().TotalSamples())
 	}
 }

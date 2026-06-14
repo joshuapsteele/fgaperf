@@ -95,7 +95,9 @@ func TestTimelineWidth(t *testing.T) {
 		{5 * time.Second, time.Second},      // smoke run buckets by the second
 		{60 * time.Second, 5 * time.Second}, // ~12 rows
 		{10 * time.Minute, time.Minute},     // long run buckets by the minute
-		{2 * time.Hour, time.Minute},        // capped at a minute
+		{1 * time.Hour, 5 * time.Minute},    // soak run buckets by five-minute slices
+		{2 * time.Hour, 10 * time.Minute},   // multi-hour windows stay roughly a dozen rows
+		{24 * time.Hour, 2 * time.Hour},     // very long soaks keep widening
 	}
 	for _, c := range cases {
 		if got := timelineWidth(c.window); got != c.want {

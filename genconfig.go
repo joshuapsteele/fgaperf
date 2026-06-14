@@ -447,6 +447,12 @@ load:
   # want 5m+.
   duration: 60s
 
+  # For long single-rate soaks, emit cumulative interim results/findings at
+  # this cadence while the final report still covers the whole measured
+  # window. Also rotates sample_file into numbered chunks at the same cadence.
+  # Mutually exclusive with sweep. 0/off = only the final report.
+  # report_interval: 5m
+
   # MINIMIZE_LATENCY = cached reads when possible (typical production
   # default; matches what fast callers see).
   # HIGHER_CONSISTENCY = skip caches every time (matches "must be fresh"
@@ -463,6 +469,12 @@ load:
   # churn writes only touch fresh churn-only instances, so verify_results
   # still works. 0 = no churn.
   # write_rate: 50
+
+  # Dump one JSON line per measured sample (target, latency, response latency,
+  # outcome class, timestamp) for your own analysis. A .gz suffix gzips the
+  # stream. A sweep's steps all append to the same file; with report_interval,
+  # each interval writes a numbered sample chunk. Off when unset.
+  # sample_file: samples.jsonl.gz
 
 `)
 }

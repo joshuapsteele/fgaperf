@@ -145,26 +145,29 @@ type ReplayConfig struct {
 }
 
 type LoadConfig struct {
-	Concurrency   int           `yaml:"concurrency"`
-	ClientID      int           `yaml:"client_id"` // distinct RNG stream for multi-client runs; 0 = default single client
-	Transport     string        `yaml:"transport"` // wire protocol for the measured phase: http (default) | grpc. Setup/probe always use HTTP.
-	Rate          int           `yaml:"rate"`      // requests/sec; 0 = closed loop
-	Arrival       string        `yaml:"arrival"`   // fixed-rate arrival process: uniform (even ticker) | poisson (exponential inter-arrivals)
-	Warmup        time.Duration `yaml:"warmup"`
-	Duration      time.Duration `yaml:"duration"`
-	Consistency   string        `yaml:"consistency"`    // MINIMIZE_LATENCY | HIGHER_CONSISTENCY
-	Endpoint      string        `yaml:"endpoint"`       // check | batch-check | list-objects | list-users
-	BatchSize     int           `yaml:"batch_size"`     // for batch-check
-	VerifyResults bool          `yaml:"verify_results"` // compare allowed against probe expectations
-	WriteRate     int           `yaml:"write_rate"`     // background tuple writes/sec during the measured phase; 0 = none
-	SampleFile    string        `yaml:"sample_file"`    // optional: dump one JSON line per measured sample here (.gz = gzip); "" = off
-	Sweep         SweepConfig   `yaml:"sweep"`
-	SLOP99        time.Duration `yaml:"slo_p99"` // optional: a sweep step "passes" only when response-latency p99 is under this
+	Concurrency    int           `yaml:"concurrency"`
+	ClientID       int           `yaml:"client_id"` // distinct RNG stream for multi-client runs; 0 = default single client
+	Transport      string        `yaml:"transport"` // wire protocol for the measured phase: http (default) | grpc. Setup/probe always use HTTP.
+	Rate           int           `yaml:"rate"`      // requests/sec; 0 = closed loop
+	Arrival        string        `yaml:"arrival"`   // fixed-rate arrival process: uniform (even ticker) | poisson (exponential inter-arrivals)
+	Warmup         time.Duration `yaml:"warmup"`
+	Duration       time.Duration `yaml:"duration"`
+	Consistency    string        `yaml:"consistency"`     // MINIMIZE_LATENCY | HIGHER_CONSISTENCY
+	Endpoint       string        `yaml:"endpoint"`        // check | batch-check | list-objects | list-users
+	BatchSize      int           `yaml:"batch_size"`      // for batch-check
+	VerifyResults  bool          `yaml:"verify_results"`  // compare allowed against probe expectations
+	WriteRate      int           `yaml:"write_rate"`      // background tuple writes/sec during the measured phase; 0 = none
+	SampleFile     string        `yaml:"sample_file"`     // optional: dump one JSON line per measured sample here (.gz = gzip); "" = off
+	ReportInterval time.Duration `yaml:"report_interval"` // optional: emit interim report snapshots during long single-rate runs
+	Sweep          SweepConfig   `yaml:"sweep"`
+	SLOP99         time.Duration `yaml:"slo_p99"` // optional: a sweep step "passes" only when response-latency p99 is under this
 
 	// sampleAppend makes RunLoad open SampleFile in append mode instead of
 	// truncating, so a sweep's steps all land in one file. Not a YAML knob;
 	// set by RunSweep per step.
-	sampleAppend bool `yaml:"-"`
+	sampleAppend      bool          `yaml:"-"`
+	interimTupleCount int           `yaml:"-"`
+	interimSeedDur    time.Duration `yaml:"-"`
 }
 
 // SweepConfig steps through fixed offered rates in one run, reusing the same
@@ -501,6 +504,9 @@ func (c *Config) validate() error {
 	if c.Load.Duration <= 0 {
 		return fmt.Errorf("load.duration must be positive, got %v", c.Load.Duration)
 	}
+	if c.Load.ReportInterval < 0 {
+		return fmt.Errorf("load.report_interval must be >= 0, got %v", c.Load.ReportInterval)
+	}
 	if c.Load.Sweep.StepDuration < 0 {
 		return fmt.Errorf("load.sweep.step_duration must be >= 0, got %v", c.Load.Sweep.StepDuration)
 	}
@@ -514,6 +520,9 @@ func (c *Config) validate() error {
 	}
 	if len(c.Load.Sweep.Rates) > 0 && c.Load.Sweep.StepDuration <= 0 {
 		return fmt.Errorf("load.sweep.step_duration must be positive when load.sweep.rates is set, got %v", c.Load.Sweep.StepDuration)
+	}
+	if len(c.Load.Sweep.Rates) > 0 && c.Load.ReportInterval > 0 {
+		return fmt.Errorf("load.report_interval is for single-rate runs and cannot be combined with load.sweep")
 	}
 	if c.Load.SLOP99 < 0 {
 		return fmt.Errorf("load.slo_p99 must be >= 0, got %v", c.Load.SLOP99)
