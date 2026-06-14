@@ -435,7 +435,7 @@ comma-separated specs), renders repeated metrics as mean +/- sample stdev, and
 labels overall, server-side, and per-relation deltas with a Welch-test signal.
 Docs and examples cover the repeated-run workflow.
 
-### 11. HTML / visual report
+### 11. HTML / visual report ✅
 
 Status: **Complete** (2026-06-14) — added a self-contained HTML renderer
 (`report_html.go`) backed by the existing `Report` struct. Final `run` and
