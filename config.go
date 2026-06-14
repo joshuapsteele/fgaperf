@@ -85,6 +85,13 @@ type ProbeConfig struct {
 	AllowedRatio   float64      `yaml:"allowed_ratio"`   // -1 keeps the natural mix
 	MaxDuplication float64      `yaml:"max_duplication"` // resample duplication bound; -1 = unbounded
 	Concurrency    int          `yaml:"concurrency"`
+	// AttributeDS turns on a best-effort per-relation datastore-query
+	// attribution pass after the corpus is built: it replays a small distinct
+	// batch per target, one relation at a time, and diffs OpenFGA's
+	// openfga_datastore_query_count histogram to estimate datastore queries per
+	// check. Requires metrics.prometheus_url. Off by default; when off the
+	// probe path is byte-identical.
+	AttributeDS bool `yaml:"attribute_ds_queries"`
 }
 
 // TargetSpec names a probe target. In YAML it is either a bare string
@@ -353,6 +360,9 @@ func (c *Config) validate() error {
 	}
 	if c.Probe.AllowedRatio > 1 {
 		return fmt.Errorf("probe.allowed_ratio must be between 0 and 1 (or negative for the natural mix), got %v", c.Probe.AllowedRatio)
+	}
+	if c.Probe.AttributeDS && c.Metrics.PrometheusURL == "" {
+		return fmt.Errorf("probe.attribute_ds_queries requires metrics.prometheus_url (the per-relation datastore-query attribution pass reads OpenFGA's metrics endpoint)")
 	}
 	if c.Contextual.AttachProbability != nil {
 		if err := prob("contextual.attach_probability", *c.Contextual.AttachProbability); err != nil {

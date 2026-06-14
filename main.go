@@ -436,6 +436,18 @@ func probe(client *FGAClient, a *Analysis, cfg *Config, st *State) error {
 	if err != nil {
 		return err
 	}
+	// Best-effort per-relation datastore-query attribution. Opt-in
+	// (probe.attribute_ds_queries) and gated on a metrics endpoint (enforced in
+	// validate), so the default probe path never runs it and stays byte-identical.
+	if cfg.Probe.AttributeDS && cfg.Metrics.PrometheusURL != "" {
+		scraper := NewMetricsScraper(cfg.Metrics.PrometheusURL)
+		attributeDatastoreQueries(client, scraper, st.StoreID, st.ModelID, corpus)
+		if len(corpus.DSQueries) > 0 {
+			fmt.Printf("attributed datastore queries/check for %d/%d targets\n", len(corpus.DSQueries), len(corpus.Stats))
+		} else {
+			fmt.Fprintln(os.Stderr, yellowErr("probe: datastore-query attribution produced no values (metrics endpoint unreachable or no histogram movement)"))
+		}
+	}
 	var allowed int
 	condCount := 0
 	contextualCount := 0

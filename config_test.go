@@ -127,37 +127,38 @@ func TestConfigRejectsUnknownKeys(t *testing.T) {
 
 func TestConfigValidation(t *testing.T) {
 	cases := map[string]string{
-		"bad consistency":            "load:\n  consistency: EVENTUAL\n",
-		"bad endpoint":               "load:\n  endpoint: expand\n",
-		"bad probability":            "seed:\n  wildcard_probability: 1.5\n",
-		"bad allowed_ratio":          "probe:\n  allowed_ratio: 2\n",
-		"bad fanout key":             "seed:\n  fanout:\n    notarelation: 3\n",
-		"bad target key":             "probe:\n  targets: [document]\n",
-		"zero target weight":         "probe:\n  targets:\n    - relation: document#viewer\n      weight: 0\n",
-		"bad contextual key":         "contextual:\n  relations: [viewer]\n",
-		"missing pool":               "conditions:\n  has_scope:\n    params:\n      scopes: {pool: nope}\n",
-		"negative rate":              "load:\n  rate: -5\n",
-		"negative concurrency":       "load:\n  concurrency: -1\n",
-		"zero concurrency":           "load:\n  concurrency: 0\n",
-		"negative openfga timeout":   "openfga:\n  timeout: -1s\n",
-		"negative warmup":            "load:\n  warmup: -1s\n",
-		"zero duration":              "load:\n  duration: 0s\n",
-		"negative duration":          "load:\n  duration: -1s\n",
-		"negative sweep duration":    "load:\n  sweep:\n    rates: [100]\n    step_duration: -1s\n",
-		"zero sweep duration":        "load:\n  sweep:\n    rates: [100]\n    step_duration: 0s\n",
-		"negative default fanout":    "seed:\n  default_fanout: -1\n",
-		"negative fanout":            "seed:\n  fanout:\n    document#viewer: -1\n",
-		"negative instances":         "seed:\n  instances:\n    document: -1\n",
-		"negative pool count":        "pools:\n  default:\n    prefix: val-\n    count: -1\n",
-		"negative condition keys":    "conditions:\n  has_scope:\n    params:\n      granted_scopes: {keys: -1}\n",
-		"empty fanout user type":     "seed:\n  fanout:\n    \"group#member@\": 3\n",
-		"bad wildcard prob key":      "seed:\n  wildcard_probabilities:\n    notarelation: 0.5\n",
-		"wildcard prob out of range": "seed:\n  wildcard_probabilities:\n    \"document#viewer\": 1.5\n",
-		"keys and keys_distribution": "conditions:\n  has_scope:\n    params:\n      granted_scopes: {keys: 4, keys_distribution: {values: [2, 8]}}\n",
-		"empty distribution values":  "conditions:\n  has_scope:\n    params:\n      granted_scopes: {keys_distribution: {values: []}}\n",
-		"mismatched weights":         "conditions:\n  has_scope:\n    params:\n      granted_scopes: {keys_distribution: {values: [2, 8], weights: [1]}}\n",
-		"nonpositive value":          "conditions:\n  has_scope:\n    params:\n      granted_scopes: {keys_distribution: {values: [0]}}\n",
-		"zero-sum weights":           "conditions:\n  has_scope:\n    params:\n      granted_scopes: {keys_distribution: {values: [2, 8], weights: [0, 0]}}\n",
+		"bad consistency":              "load:\n  consistency: EVENTUAL\n",
+		"bad endpoint":                 "load:\n  endpoint: expand\n",
+		"bad probability":              "seed:\n  wildcard_probability: 1.5\n",
+		"bad allowed_ratio":            "probe:\n  allowed_ratio: 2\n",
+		"bad fanout key":               "seed:\n  fanout:\n    notarelation: 3\n",
+		"bad target key":               "probe:\n  targets: [document]\n",
+		"zero target weight":           "probe:\n  targets:\n    - relation: document#viewer\n      weight: 0\n",
+		"bad contextual key":           "contextual:\n  relations: [viewer]\n",
+		"missing pool":                 "conditions:\n  has_scope:\n    params:\n      scopes: {pool: nope}\n",
+		"negative rate":                "load:\n  rate: -5\n",
+		"negative concurrency":         "load:\n  concurrency: -1\n",
+		"zero concurrency":             "load:\n  concurrency: 0\n",
+		"negative openfga timeout":     "openfga:\n  timeout: -1s\n",
+		"negative warmup":              "load:\n  warmup: -1s\n",
+		"zero duration":                "load:\n  duration: 0s\n",
+		"negative duration":            "load:\n  duration: -1s\n",
+		"negative sweep duration":      "load:\n  sweep:\n    rates: [100]\n    step_duration: -1s\n",
+		"zero sweep duration":          "load:\n  sweep:\n    rates: [100]\n    step_duration: 0s\n",
+		"negative default fanout":      "seed:\n  default_fanout: -1\n",
+		"negative fanout":              "seed:\n  fanout:\n    document#viewer: -1\n",
+		"negative instances":           "seed:\n  instances:\n    document: -1\n",
+		"negative pool count":          "pools:\n  default:\n    prefix: val-\n    count: -1\n",
+		"negative condition keys":      "conditions:\n  has_scope:\n    params:\n      granted_scopes: {keys: -1}\n",
+		"empty fanout user type":       "seed:\n  fanout:\n    \"group#member@\": 3\n",
+		"bad wildcard prob key":        "seed:\n  wildcard_probabilities:\n    notarelation: 0.5\n",
+		"wildcard prob out of range":   "seed:\n  wildcard_probabilities:\n    \"document#viewer\": 1.5\n",
+		"keys and keys_distribution":   "conditions:\n  has_scope:\n    params:\n      granted_scopes: {keys: 4, keys_distribution: {values: [2, 8]}}\n",
+		"empty distribution values":    "conditions:\n  has_scope:\n    params:\n      granted_scopes: {keys_distribution: {values: []}}\n",
+		"mismatched weights":           "conditions:\n  has_scope:\n    params:\n      granted_scopes: {keys_distribution: {values: [2, 8], weights: [1]}}\n",
+		"nonpositive value":            "conditions:\n  has_scope:\n    params:\n      granted_scopes: {keys_distribution: {values: [0]}}\n",
+		"zero-sum weights":             "conditions:\n  has_scope:\n    params:\n      granted_scopes: {keys_distribution: {values: [2, 8], weights: [0, 0]}}\n",
+		"attribute_ds without metrics": "probe:\n  attribute_ds_queries: true\n",
 	}
 	for name, yaml := range cases {
 		path := filepath.Join(t.TempDir(), "config.yaml")
@@ -259,6 +260,30 @@ func TestListEndpointsValid(t *testing.T) {
 		if _, err := LoadConfigFile(path); err != nil {
 			t.Errorf("endpoint %q rejected: %v", ep, err)
 		}
+	}
+}
+
+// probe.attribute_ds_queries is valid (and parses) when a metrics endpoint is
+// configured; off-by-default keeps the normal probe path untouched.
+func TestAttributeDSConfig(t *testing.T) {
+	def, err := LoadConfigFile("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if def.Probe.AttributeDS {
+		t.Error("probe.attribute_ds_queries should default to false")
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	yaml := "metrics:\n  prometheus_url: http://localhost:2112\nprobe:\n  attribute_ds_queries: true\n"
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfigFile(path)
+	if err != nil {
+		t.Fatalf("attribute_ds_queries with metrics endpoint rejected: %v", err)
+	}
+	if !cfg.Probe.AttributeDS {
+		t.Error("attribute_ds_queries: true did not parse")
 	}
 }
 

@@ -118,6 +118,35 @@ func TestEndpointNoun(t *testing.T) {
 	}
 }
 
+// The per-relation table gains a DS column only when attribution ran; the
+// default report (DSQueriesByTarget nil) omits it entirely.
+func TestPerRelationDSColumn(t *testing.T) {
+	r := fixedReport()
+	if md := r.Markdown(); strings.Contains(md, "DS queries/check (probe) |") {
+		t.Fatal("DS column rendered without attribution data")
+	}
+
+	r.DSQueriesByTarget = map[string]float64{
+		"document#viewer": 3.2,
+		"document#editor": 11.5,
+	}
+	md := r.Markdown()
+	if !strings.Contains(md, "DS queries/check (probe) |") {
+		t.Fatal("DS column missing from per-relation table when attribution data present")
+	}
+	if !strings.Contains(md, "| 11.5 |") || !strings.Contains(md, "| 3.2 |") {
+		t.Errorf("per-relation DS values not rendered:\n%s", md)
+	}
+
+	// batch-check rows mix relations, so the DS column is omitted even when data
+	// is present.
+	r.Endpoint = "batch-check"
+	r.ByTarget = map[string]Stats{"batch": {Count: 10, Items: 200, P99: 6 * time.Millisecond}}
+	if md := r.Markdown(); strings.Contains(md, "DS queries/check (probe) |") {
+		t.Error("DS column should be omitted for batch-check")
+	}
+}
+
 func TestBatchCheckMarkdownLabelsBatchBreakdown(t *testing.T) {
 	r := fixedReport()
 	r.Endpoint = "batch-check"

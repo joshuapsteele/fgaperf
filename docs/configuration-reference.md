@@ -111,6 +111,7 @@ write churn).
 | `probe.allowed_ratio` | `0.5` | Desired allowed/denied mix in the corpus. `0.5` = 50/50. Use `-1` to keep the natural mix observed during probing (recommended for absolute throughput numbers). |
 | `probe.max_duplication` | `5` | Caps how far probe may duplicate scarce outcomes to hit `allowed_ratio`. `-1` removes the cap. Targets that would exceed it keep their natural mix, with a warning. |
 | `probe.concurrency` | `8` | Concurrent probe workers. |
+| `probe.attribute_ds_queries` | `false` | When `true` (requires `metrics.prometheus_url`), runs an extra probe pass that attributes **datastore queries per check, per relation**. See [Per-relation datastore-query attribution](#per-relation-datastore-query-attribution) below. |
 
 ### Choosing `allowed_ratio`
 
@@ -122,6 +123,32 @@ write churn).
 - **Production share**: if you know roughly what fraction of real checks
   allow, set `allowed_ratio` to match. Just be aware `max_duplication` may
   block extreme ratios.
+
+### Per-relation datastore-query attribution
+
+The server-side view (`metrics.prometheus_url`) reports *aggregate* datastore
+queries per request across the whole measured phase — it can't tell you that
+*this* relation costs 12 datastore reads while *that* one costs 1. Per-relation
+cost is the sharpest capacity signal for spotting an expensive rewrite, and
+`probe.attribute_ds_queries: true` measures it.
+
+After building the corpus, fgaperf replays a small distinct batch of checks per
+relation — **one relation at a time**, at `HIGHER_CONSISTENCY` so they bypass
+the check cache and hit the datastore — and diffs OpenFGA's
+`openfga_datastore_query_count` histogram around each batch. The per-batch
+sum÷count is that relation's mean datastore queries per check, recorded on the
+corpus and surfaced as a "DS queries/check (probe)" column in the findings
+per-relation table (and `ds_queries_by_target` in the results JSON).
+
+- Requires `metrics.prometheus_url`; fgaperf refuses to start without it.
+- **Best-effort and approximate.** Values are histogram diffs, so concurrent
+  traffic on a shared server pollutes them; run it against a dedicated server
+  for clean numbers. A failed scrape leaves a relation unattributed rather than
+  failing the probe.
+- **Off by default.** When off, the probe path and corpus are byte-identical to
+  a run without the flag.
+- It reflects *probe-time* checks, not the measured load phase, and the column
+  is omitted for `batch-check` (whose report rows mix relations).
 
 ## `replay` — corpus from a real check log
 

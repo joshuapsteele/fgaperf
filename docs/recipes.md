@@ -81,6 +81,22 @@ Probe still samples each target evenly, but the load phase sends more traffic
 to the weighted relation. Use this when production traffic is concentrated on
 one permission path.
 
+To find *why* a relation is hot — is it doing far more datastore work than its
+peers? — turn on per-relation datastore-query attribution (needs a metrics
+endpoint):
+
+```yaml
+metrics:
+  prometheus_url: http://localhost:2112
+probe:
+  attribute_ds_queries: true
+```
+
+The findings per-relation table then gains a "DS queries/check (probe)" column.
+A relation reading many datastore rows per check (a deep tuple-to-userset path)
+next to one reading a couple (a direct relation) tells you where to look in the
+model. Best-effort; run it against a dedicated server for clean numbers.
+
 ## Replay Production Traffic
 
 ```yaml

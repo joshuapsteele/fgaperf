@@ -1,9 +1,15 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"math/rand"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func corpusOf(target string, allowed, denied int) []CorpusEntry {
@@ -197,6 +203,109 @@ func TestContextualTuplesPreferSeededRelatedObject(t *testing.T) {
 	}
 	if tuples[0].Object != "customer:chosen" {
 		t.Fatalf("contextual tuple did not use seeded related customer: %+v", tuples[0])
+	}
+}
+
+// attributeDatastoreQueries must isolate a per-relation datastore cost: one
+// relation at a time, distinct checks only, dividing the server's
+// datastore-query histogram diff by the recorded count.
+func TestAttributeDatastoreQueries(t *testing.T) {
+	// Datastore queries the fake server "performs" per check, by relation: a
+	// deep relation costs many reads, a direct one a few — the sanity ordering
+	// the acceptance criteria call for.
+	cost := map[string]int{"viewer": 2, "editor": 12}
+	var mu sync.Mutex
+	var sum, count int
+	perRel := map[string]int{}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/metrics") {
+			mu.Lock()
+			s, c := sum, count
+			mu.Unlock()
+			// One aggregated series, as the real (label-summed) metric appears.
+			fmt.Fprint(w, "# TYPE openfga_datastore_query_count histogram\n")
+			fmt.Fprintf(w, "openfga_datastore_query_count_bucket{le=\"+Inf\"} %d\n", c)
+			fmt.Fprintf(w, "openfga_datastore_query_count_sum %d\n", s)
+			fmt.Fprintf(w, "openfga_datastore_query_count_count %d\n", c)
+			return
+		}
+		if !strings.HasSuffix(r.URL.Path, "/check") {
+			t.Errorf("unexpected request path %q", r.URL.Path)
+			http.Error(w, "unexpected", http.StatusBadRequest)
+			return
+		}
+		var req CheckRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decoding check: %v", err)
+			return
+		}
+		if req.Consistency != "HIGHER_CONSISTENCY" {
+			t.Errorf("attribution check used consistency %q, want HIGHER_CONSISTENCY", req.Consistency)
+		}
+		mu.Lock()
+		sum += cost[req.TupleKey.Relation]
+		count++
+		perRel[req.TupleKey.Relation]++
+		mu.Unlock()
+		json.NewEncoder(w).Encode(map[string]bool{"allowed": true})
+	}))
+	defer srv.Close()
+
+	client := NewFGAClient(OpenFGAConfig{APIURL: srv.URL, Timeout: 5 * time.Second}, 4)
+	scraper := NewMetricsScraper(srv.URL)
+
+	corpus := &Corpus{Entries: []CorpusEntry{
+		{Target: "document#viewer", User: "user:1", Relation: "viewer", Object: "document:1"},
+		{Target: "document#viewer", User: "user:2", Relation: "viewer", Object: "document:2"},
+		{Target: "document#viewer", User: "user:1", Relation: "viewer", Object: "document:1"}, // duplicate: must be skipped
+		{Target: "document#editor", User: "user:3", Relation: "editor", Object: "document:5"},
+		{Target: "document#editor", User: "user:4", Relation: "editor", Object: "document:6"},
+	}}
+	corpus.Stats = corpus.TargetStats()
+
+	attributeDatastoreQueries(client, scraper, "store1", "model1", corpus)
+
+	if got := corpus.DSQueries["document#viewer"]; got != 2 {
+		t.Errorf("viewer DS queries/check = %v, want 2", got)
+	}
+	if got := corpus.DSQueries["document#editor"]; got != 12 {
+		t.Errorf("editor DS queries/check = %v, want 12", got)
+	}
+	if corpus.DSQueries["document#editor"] <= corpus.DSQueries["document#viewer"] {
+		t.Errorf("expected the deeper editor relation to cost more datastore reads than viewer: %+v", corpus.DSQueries)
+	}
+	// Distinct only: 2 viewer (the dup dropped) + 2 editor = 4 checks total.
+	if count != 4 {
+		t.Errorf("ran %d attribution checks, want 4 (distinct entries only)", count)
+	}
+	if perRel["viewer"] != 2 {
+		t.Errorf("ran %d viewer checks, want 2 distinct", perRel["viewer"])
+	}
+}
+
+// Attribution is best-effort: an unreachable/erroring metrics endpoint must
+// leave DSQueries unset rather than fail the probe.
+func TestAttributeDatastoreQueriesBestEffort(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/metrics") {
+			http.Error(w, "metrics down", http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]bool{"allowed": true})
+	}))
+	defer srv.Close()
+
+	client := NewFGAClient(OpenFGAConfig{APIURL: srv.URL, Timeout: 5 * time.Second}, 4)
+	scraper := NewMetricsScraper(srv.URL)
+	corpus := &Corpus{Entries: []CorpusEntry{
+		{Target: "document#viewer", User: "user:1", Relation: "viewer", Object: "document:1"},
+	}}
+	corpus.Stats = corpus.TargetStats()
+
+	attributeDatastoreQueries(client, scraper, "store1", "model1", corpus)
+	if corpus.DSQueries != nil {
+		t.Errorf("expected no attribution when metrics endpoint errors, got %+v", corpus.DSQueries)
 	}
 }
 

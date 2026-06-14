@@ -237,6 +237,14 @@ probe:
   # write/read contention on a constrained server.
   concurrency: 8
 
+  # Per-relation datastore-query attribution. When true (and metrics.prometheus_url
+  # is set, below), an extra probe pass replays a small distinct batch per relation,
+  # one relation at a time, and diffs OpenFGA's datastore-query histogram to
+  # attribute datastore queries per check per relation — the sharpest signal for an
+  # expensive rewrite. Adds a "DS queries/check (probe)" column to the per-relation
+  # table. Best-effort; off by default (the probe path is then byte-identical).
+  # attribute_ds_queries: true
+
 # ---------------------------------------------------------------------------
 # load: how the corpus is replayed
 # ---------------------------------------------------------------------------

@@ -387,6 +387,11 @@ probe:
   # write/read contention on a constrained server.
   concurrency: 8
 
+  # Attribute datastore queries per check per relation (needs metrics.prometheus_url).
+  # Adds a "DS queries/check (probe)" column to the per-relation table — the sharpest
+  # signal for an expensive rewrite. Best-effort; off by default.
+  # attribute_ds_queries: true
+
 `)
 }
 

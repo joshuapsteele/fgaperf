@@ -88,6 +88,31 @@ func TestSnapshotDiffAndSummary(t *testing.T) {
 	}
 }
 
+func TestDSQueryDiff(t *testing.T) {
+	before := parsePrometheus(promFixture)
+	after := parsePrometheus(promFixture)
+	q := after.Histograms["openfga_datastore_query_count"]
+	q.Buckets[math.Inf(1)] += 40
+	q.Sum += 240 // 40 more checks, 240 more datastore queries -> 6 per check
+	q.Count += 40
+
+	sum, count := dsQueryDiff(before, after)
+	if sum != 240 || count != 40 {
+		t.Fatalf("dsQueryDiff = %v/%v, want 240/40", sum, count)
+	}
+	if got := sum / count; got != 6 {
+		t.Errorf("queries per check = %v, want 6", got)
+	}
+}
+
+// A snapshot with no datastore-query family must diff to (0, 0), not panic.
+func TestDSQueryDiffMissingFamily(t *testing.T) {
+	s := &snapshot{Histograms: map[string]*histogram{}, Counters: map[string]float64{}}
+	if sum, count := dsQueryDiff(s, s); sum != 0 || count != 0 {
+		t.Errorf("dsQueryDiff over empty snapshots = %v/%v, want 0/0", sum, count)
+	}
+}
+
 func TestHistQuantileInfBucketReportsHighestFiniteBound(t *testing.T) {
 	h := &histogram{Buckets: map[float64]float64{1: 0, 5: 10, math.Inf(1): 100}}
 	if got := histQuantile(h, 0.99); got != 5 {

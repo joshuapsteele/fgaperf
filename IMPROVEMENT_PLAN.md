@@ -259,7 +259,37 @@ Acceptance: given a JSONL log against a seeded store, fgaperf builds a corpus
 whose target mix matches the log, verifies ground truth, and runs load;
 malformed lines are reported and skipped, not fatal.
 
-### 6. Per-relation datastore-query attribution
+### 6. Per-relation datastore-query attribution ✅
+
+Status: **Complete** (2026-06-14) — added `probe.attribute_ds_queries` (off by
+default; validation requires `metrics.prometheus_url`). After the corpus is
+built, `attributeDatastoreQueries` (`probe.go`) replays a small distinct batch
+per target — one relation at a time, at `HIGHER_CONSISTENCY` so checks bypass
+the check cache — and diffs OpenFGA's `openfga_datastore_query_count` histogram
+around each batch via `dsQueryDiff` (`metrics.go`), recording per-target mean
+datastore queries/check on the corpus (`Corpus.DSQueries`, `omitempty`). The
+pass runs after `BuildCorpus`/`BuildReplayCorpus` and does not consume the
+generator RNG, so corpus entries stay deterministic; only the measured values
+vary. It is best-effort: a failed scrape or a target with no histogram movement
+is left unattributed, never fatal. The report carries it through
+(`Report.DSQueriesByTarget`, `omitempty`) and the per-relation table gains a "DS
+queries/check (probe)" column — omitted for `batch-check` (rows mix relations)
+and whenever the pass did not run. When off, the corpus, results JSON, and
+per-relation table are byte-identical (the golden's only change is one legend
+sentence). Verification: `go vet ./...`; `go test -race -count=1 ./...`
+(`metrics_test.go`: `dsQueryDiff` sum/count + missing-family safety;
+`probe_test.go`: an httptest server serving `/check` + `/metrics` with
+per-relation costs drives `attributeDatastoreQueries`, asserting per-relation
+attribution, deep > direct ordering, distinct-only dedup, and best-effort no-op
+on a 500ing metrics endpoint; `config_test.go`: validation rejects the flag
+without a metrics URL and accepts it with one; `report_test.go`: the DS column
+renders only with data and is omitted for batch-check); end-to-end against the
+local compose stack with attribution on — attributed 5/5 targets with sane
+values (`group#member` direct = 1.0, `document#editor` medium = 5.7, the deep
+tuple-to-userset/recursive paths `document#viewer` 14.6, `folder#viewer` 11.3,
+`document#can_share` 10.9). Docs: README config table + findings-sections table,
+configuration-reference subsection, a recipes entry under "Spot a Hot Relation",
+and commented knobs in `examples/config.yaml` and `gen-config` output.
 
 Motivation: the server-side view is aggregate over the whole measured phase —
 mean DS-queries/request for the run, not per relation. The per-relation cost

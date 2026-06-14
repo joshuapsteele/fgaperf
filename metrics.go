@@ -255,6 +255,19 @@ type ServerMetrics struct {
 	CheckCacheTotal       float64          `json:"check_cache_total"`
 }
 
+// dsQueryDiff returns the datastore-query histogram sum and count accumulated
+// between two snapshots. The probe-time per-relation attribution pass diffs
+// these around a small per-target batch to estimate mean datastore queries per
+// check: sum/count is the average over every request the server recorded in
+// the window. Best-effort — a missing family yields (0, 0).
+func dsQueryDiff(before, after *snapshot) (sum, count float64) {
+	d := after.diff(before)
+	if h := d.Histograms["openfga_datastore_query_count"]; h != nil {
+		return h.Sum, h.Count
+	}
+	return 0, 0
+}
+
 func buildServerMetrics(before, after *snapshot) *ServerMetrics {
 	d := after.diff(before)
 	sm := &ServerMetrics{

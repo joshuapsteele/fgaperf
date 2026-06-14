@@ -38,7 +38,12 @@ type Corpus struct {
 	// background-write churn (load.write_rate). Derived from the model at
 	// probe time because `run` never loads the model.
 	ChurnTemplates []ChurnTemplate `json:"churn_templates,omitempty"`
-	Entries        []CorpusEntry   `json:"entries"`
+	// DSQueries is the per-target mean datastore queries per check, attributed
+	// at probe time by attributeDatastoreQueries when probe.attribute_ds_queries
+	// is set and a metrics endpoint is configured. Absent (and the report column
+	// omitted) otherwise; its absence keeps the default corpus byte-identical.
+	DSQueries map[string]float64 `json:"ds_queries_per_check,omitempty"`
+	Entries   []CorpusEntry      `json:"entries"`
 }
 
 // ChurnTemplate is a relation shape safe for background churn: it accepts a
@@ -293,6 +298,96 @@ func classifyCandidates(client *FGAClient, storeID, modelID string, candidates [
 		fmt.Fprintf(os.Stderr, "%s: %d/%d candidates errored and were dropped\n", phase, errCount, len(candidates))
 	}
 	return valid
+}
+
+const (
+	// attributeBatchSize bounds how many distinct checks per target the DS
+	// attribution pass replays — enough to average over a target's
+	// allowed/denied mix without materially lengthening probe.
+	attributeBatchSize = 50
+	// attributeConcurrency keeps each per-target batch at low concurrency, so
+	// its datastore-query diff windows a short, mostly-isolated burst of
+	// traffic (one relation at a time is what makes the attribution per-relation).
+	attributeConcurrency = 4
+)
+
+// attributeDatastoreQueries estimates, per target, the mean datastore queries
+// per check OpenFGA performs, and records it on corpus.DSQueries. For each
+// target it replays a small distinct batch of that target's corpus checks —
+// one relation at a time, at HIGHER_CONSISTENCY so they bypass the check cache
+// and hit the datastore — and diffs the server's openfga_datastore_query_count
+// histogram around the batch. It is best-effort: a failed snapshot or a target
+// with no histogram movement is left unattributed, never fatal. It runs after
+// the corpus is built and does not consume the generator RNG, so the corpus
+// entries stay deterministic; only the (measured) DSQueries values vary.
+func attributeDatastoreQueries(client *FGAClient, scraper *MetricsScraper, storeID, modelID string, corpus *Corpus) {
+	byTarget := map[string][]CorpusEntry{}
+	seen := map[string]map[string]bool{}
+	for _, e := range corpus.Entries {
+		if len(byTarget[e.Target]) >= attributeBatchSize {
+			continue
+		}
+		if seen[e.Target] == nil {
+			seen[e.Target] = map[string]bool{}
+		}
+		k := e.key()
+		if seen[e.Target][k] {
+			continue // distinct checks only: duplicates add no information
+		}
+		seen[e.Target][k] = true
+		byTarget[e.Target] = append(byTarget[e.Target], e)
+	}
+	out := map[string]float64{}
+	for _, target := range sortedKeys(byTarget) {
+		batch := byTarget[target]
+		before, err := scraper.Snapshot()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, yellowErr(fmt.Sprintf("probe: DS attribution skipped for %s: %v", target, err)))
+			continue
+		}
+		runCheckBatch(client, storeID, modelID, batch)
+		after, err := scraper.Snapshot()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, yellowErr(fmt.Sprintf("probe: DS attribution skipped for %s: %v", target, err)))
+			continue
+		}
+		sum, count := dsQueryDiff(before, after)
+		if count <= 0 {
+			continue // no recorded checks in the window; leave unattributed
+		}
+		out[target] = sum / count
+	}
+	if len(out) > 0 {
+		corpus.DSQueries = out
+	}
+}
+
+// runCheckBatch fires each entry once at HIGHER_CONSISTENCY, at low
+// concurrency, discarding outcomes and errors. The DS-attribution pass reads
+// the effect on the server's datastore-query histogram, not the check results.
+func runCheckBatch(client *FGAClient, storeID, modelID string, batch []CorpusEntry) {
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, attributeConcurrency)
+	for i := range batch {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(e CorpusEntry) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			client.Check(storeID, CheckRequest{
+				TupleKey: CheckTupleKey{
+					User:     e.User,
+					Relation: e.Relation,
+					Object:   e.Object,
+				},
+				ContextualTuples:     contextualTupleKeys(e.ContextualTuples),
+				Context:              e.Context,
+				AuthorizationModelID: modelID,
+				Consistency:          "HIGHER_CONSISTENCY",
+			})
+		}(batch[i])
+	}
+	wg.Wait()
 }
 
 type contextualRelation struct {

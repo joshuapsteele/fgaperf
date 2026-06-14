@@ -15,49 +15,50 @@ import (
 )
 
 type Report struct {
-	GeneratedAt     time.Time                    `json:"generated_at"`
-	ToolVersion     string                       `json:"tool_version"`
-	APIURL          string                       `json:"api_url"`
-	Endpoint        string                       `json:"endpoint"`
-	Transport       string                       `json:"transport,omitempty"` // measured-phase wire protocol when non-default; "" = http
-	Consistency     string                       `json:"consistency"`
-	Concurrency     int                          `json:"concurrency"`
-	OfferedRate     int                          `json:"offered_rate"`
-	Arrival         string                       `json:"arrival,omitempty"`               // fixed-rate arrival process when non-default; "" = uniform/closed-loop
-	AchievedRate    float64                      `json:"achieved_rate_per_sec,omitempty"` // fixed-rate only: measured requests / measured window
-	DroppedSlots    int64                        `json:"dropped_rate_slots,omitempty"`
-	Warmup          string                       `json:"warmup"`
-	Duration        string                       `json:"duration"`
-	MeasuredWindow  string                       `json:"measured_window"` // first to last sample completion
-	TupleCount      int                          `json:"tuple_count"`
-	CorpusSize      int                          `json:"corpus_size"`
-	CorpusDistinct  int                          `json:"corpus_distinct"`
-	CorpusStats     map[string]CorpusTargetStats `json:"corpus_target_stats,omitempty"`
-	TotalChecks     int64                        `json:"total_checks_incl_warmup"`
-	Mismatches      int64                        `json:"result_mismatches"`
-	Throughput      float64                      `json:"throughput_per_sec"`
-	Overall         Stats                        `json:"overall"`
-	ResponseLatency *Stats                       `json:"response_latency,omitempty"` // fixed-rate only: intended send -> response
-	Conditioned     Stats                        `json:"conditioned"`
-	Unconditioned   Stats                        `json:"unconditioned"`
-	Contextual      Stats                        `json:"contextual"`
-	NoContextual    Stats                        `json:"without_contextual"`
-	ByTarget        map[string]Stats             `json:"by_target"`
-	ErrorsByClass   map[string]int64             `json:"errors_by_class,omitempty"`
-	ErrorSamples    []string                     `json:"error_samples,omitempty"`
-	Server          *ServerMetrics               `json:"server,omitempty"`     // diffed Prometheus view of the measured phase
-	WriteRate       int                          `json:"write_rate,omitempty"` // background churn writes/sec; 0 = none
-	WriteChurn      *Stats                       `json:"write_churn,omitempty"`
-	ResultCounts    *CountStats                  `json:"result_counts,omitempty"` // list-objects/list-users: distribution of returned-set sizes
-	Timeline        []TimelineBucket             `json:"timeline,omitempty"`      // per-bucket p50/p99/throughput over the measured window
-	Sweep           []SweepStep                  `json:"sweep,omitempty"`
-	SweepKneeRate   int                          `json:"sweep_knee_rate,omitempty"` // highest non-saturated, SLO-passing step; 0 = none
-	SLOP99          string                       `json:"slo_p99,omitempty"`
-	SeedDuration    string                       `json:"seed_duration,omitempty"`
-	SeedRate        float64                      `json:"seed_tuples_per_sec,omitempty"`
-	Environment     Environment                  `json:"environment"`
-	ResolvedConfig  map[string]any               `json:"resolved_config,omitempty"` // post-defaults config, credentials redacted
-	MismatchFile    string                       `json:"mismatch_file,omitempty"`   // written by Save when mismatches occurred
+	GeneratedAt       time.Time                    `json:"generated_at"`
+	ToolVersion       string                       `json:"tool_version"`
+	APIURL            string                       `json:"api_url"`
+	Endpoint          string                       `json:"endpoint"`
+	Transport         string                       `json:"transport,omitempty"` // measured-phase wire protocol when non-default; "" = http
+	Consistency       string                       `json:"consistency"`
+	Concurrency       int                          `json:"concurrency"`
+	OfferedRate       int                          `json:"offered_rate"`
+	Arrival           string                       `json:"arrival,omitempty"`               // fixed-rate arrival process when non-default; "" = uniform/closed-loop
+	AchievedRate      float64                      `json:"achieved_rate_per_sec,omitempty"` // fixed-rate only: measured requests / measured window
+	DroppedSlots      int64                        `json:"dropped_rate_slots,omitempty"`
+	Warmup            string                       `json:"warmup"`
+	Duration          string                       `json:"duration"`
+	MeasuredWindow    string                       `json:"measured_window"` // first to last sample completion
+	TupleCount        int                          `json:"tuple_count"`
+	CorpusSize        int                          `json:"corpus_size"`
+	CorpusDistinct    int                          `json:"corpus_distinct"`
+	CorpusStats       map[string]CorpusTargetStats `json:"corpus_target_stats,omitempty"`
+	TotalChecks       int64                        `json:"total_checks_incl_warmup"`
+	Mismatches        int64                        `json:"result_mismatches"`
+	Throughput        float64                      `json:"throughput_per_sec"`
+	Overall           Stats                        `json:"overall"`
+	ResponseLatency   *Stats                       `json:"response_latency,omitempty"` // fixed-rate only: intended send -> response
+	Conditioned       Stats                        `json:"conditioned"`
+	Unconditioned     Stats                        `json:"unconditioned"`
+	Contextual        Stats                        `json:"contextual"`
+	NoContextual      Stats                        `json:"without_contextual"`
+	ByTarget          map[string]Stats             `json:"by_target"`
+	DSQueriesByTarget map[string]float64           `json:"ds_queries_by_target,omitempty"` // probe-time mean datastore queries per check, per relation; absent unless probe.attribute_ds_queries ran
+	ErrorsByClass     map[string]int64             `json:"errors_by_class,omitempty"`
+	ErrorSamples      []string                     `json:"error_samples,omitempty"`
+	Server            *ServerMetrics               `json:"server,omitempty"`     // diffed Prometheus view of the measured phase
+	WriteRate         int                          `json:"write_rate,omitempty"` // background churn writes/sec; 0 = none
+	WriteChurn        *Stats                       `json:"write_churn,omitempty"`
+	ResultCounts      *CountStats                  `json:"result_counts,omitempty"` // list-objects/list-users: distribution of returned-set sizes
+	Timeline          []TimelineBucket             `json:"timeline,omitempty"`      // per-bucket p50/p99/throughput over the measured window
+	Sweep             []SweepStep                  `json:"sweep,omitempty"`
+	SweepKneeRate     int                          `json:"sweep_knee_rate,omitempty"` // highest non-saturated, SLO-passing step; 0 = none
+	SLOP99            string                       `json:"slo_p99,omitempty"`
+	SeedDuration      string                       `json:"seed_duration,omitempty"`
+	SeedRate          float64                      `json:"seed_tuples_per_sec,omitempty"`
+	Environment       Environment                  `json:"environment"`
+	ResolvedConfig    map[string]any               `json:"resolved_config,omitempty"` // post-defaults config, credentials redacted
+	MismatchFile      string                       `json:"mismatch_file,omitempty"`   // written by Save when mismatches occurred
 
 	mismatchRecords []MismatchRecord // written to MismatchFile by Save
 }
@@ -323,6 +324,9 @@ func BuildReport(res *LoadResult, corpus *Corpus, cfg *Config, tupleCount int, s
 	for t, ss := range lst.byTarget {
 		r.ByTarget[t] = ss.Stats()
 	}
+	// Carry probe-time per-relation DS attribution through to the report; nil
+	// (the default) leaves the report JSON and per-relation table unchanged.
+	r.DSQueriesByTarget = corpus.DSQueries
 	// Throughput over the wall clock the samples actually spanned, not the
 	// configured duration: in-flight requests complete after the deadline and
 	// slow tails stretch the real window.
@@ -662,8 +666,17 @@ func (r *Report) Markdown() string {
 	if r.Endpoint == "batch-check" {
 		label = "Population"
 	}
-	w("| %s | Requests | Errors | Mean | p50 | p95 | p99 |", label)
-	w("|---|---|---|---|---|---|---|")
+	// The DS column attributes per-relation datastore cost; it only makes sense
+	// per relation, so it is omitted for batch-check (whose rows mix relations)
+	// and whenever the attribution pass did not run.
+	dsCol := r.Endpoint != "batch-check" && len(r.DSQueriesByTarget) > 0
+	if dsCol {
+		w("| %s | Requests | Errors | Mean | p50 | p95 | p99 | DS queries/check (probe) |", label)
+		w("|---|---|---|---|---|---|---|---|")
+	} else {
+		w("| %s | Requests | Errors | Mean | p50 | p95 | p99 |", label)
+		w("|---|---|---|---|---|---|---|")
+	}
 	targets := make([]string, 0, len(r.ByTarget))
 	for t := range r.ByTarget {
 		targets = append(targets, t)
@@ -674,9 +687,21 @@ func (r *Report) Markdown() string {
 		if s.Count == 0 && s.Errors == 0 {
 			continue
 		}
-		w("| %s | %d | %d | %s | %s | %s | %s |", t, s.Count, s.Errors, ms(s.Mean), ms(s.P50), ms(s.P95), ms(s.P99))
+		if dsCol {
+			dsq := "—"
+			if v, ok := r.DSQueriesByTarget[t]; ok {
+				dsq = fmt.Sprintf("%.1f", v)
+			}
+			w("| %s | %d | %d | %s | %s | %s | %s | %s |", t, s.Count, s.Errors, ms(s.Mean), ms(s.P50), ms(s.P95), ms(s.P99), dsq)
+		} else {
+			w("| %s | %d | %d | %s | %s | %s | %s |", t, s.Count, s.Errors, ms(s.Mean), ms(s.P50), ms(s.P95), ms(s.P99))
+		}
 	}
 	w("")
+	if dsCol {
+		w("The \"DS queries/check (probe)\" column is the mean number of datastore queries OpenFGA performed per check for that relation, measured at probe time over a small distinct batch at HIGHER_CONSISTENCY, one relation at a time. It is the per-relation capacity signal: a deep tuple-to-userset relation costs many datastore reads where a direct relation costs a few. Values are best-effort histogram diffs and reflect probe-time checks, not the measured load phase.")
+		w("")
+	}
 	if len(r.ErrorsByClass) > 0 {
 		w("## Errors")
 		w("")
@@ -754,7 +779,7 @@ func (r *Report) Markdown() string {
 	w("")
 	w("**Population slices.** \"All checks\" is every measured Check or BatchCheck. \"CEL-conditioned paths\" are checks whose resolution can evaluate a CEL condition somewhere in the graph (computed statically from the model — fgaperf doesn't trace per request). \"With contextual tuples\" are checks where `contextual.attach_probability` won and the request carried contextual tuples. \"Background tuple writes\" is the churn rate's Write/Delete latency, only present when `load.write_rate > 0`.")
 	w("")
-	w("**Per-relation table.** \"Requests\" is sample count for that relation in the measured window; \"Errors\" counts failures attributed to checks of that relation. Compare relations of similar graph depth — a deeper relation with higher latency may be entirely expected.")
+	w("**Per-relation table.** \"Requests\" is sample count for that relation in the measured window; \"Errors\" counts failures attributed to checks of that relation. Compare relations of similar graph depth — a deeper relation with higher latency may be entirely expected. The \"DS queries/check (probe)\" column appears only when `probe.attribute_ds_queries` ran with a metrics endpoint: it reports how many datastore reads each relation's check costs, attributed one relation at a time at probe time — the sharpest signal for spotting an expensive rewrite.")
 	w("")
 	w("**Latency over time.** The measured window split into equal time buckets (the width adapts so any run is ~12 rows). \"Throughput/s\" divides each bucket's completed items by the bucket width. Read it as a trend: early buckets slower than later ones is cache warming; a single bucket spiking is a GC pause or datastore compaction; p99 trending upward across buckets is the server falling behind. The last bucket may be partial and read low.")
 	w("")
