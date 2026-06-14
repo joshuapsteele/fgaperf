@@ -19,10 +19,11 @@ type Report struct {
 	ToolVersion     string                       `json:"tool_version"`
 	APIURL          string                       `json:"api_url"`
 	Endpoint        string                       `json:"endpoint"`
+	Transport       string                       `json:"transport,omitempty"` // measured-phase wire protocol when non-default; "" = http
 	Consistency     string                       `json:"consistency"`
 	Concurrency     int                          `json:"concurrency"`
 	OfferedRate     int                          `json:"offered_rate"`
-	Arrival         string                       `json:"arrival,omitempty"` // fixed-rate arrival process when non-default; "" = uniform/closed-loop
+	Arrival         string                       `json:"arrival,omitempty"`               // fixed-rate arrival process when non-default; "" = uniform/closed-loop
 	AchievedRate    float64                      `json:"achieved_rate_per_sec,omitempty"` // fixed-rate only: measured requests / measured window
 	DroppedSlots    int64                        `json:"dropped_rate_slots,omitempty"`
 	Warmup          string                       `json:"warmup"`
@@ -305,6 +306,10 @@ func BuildReport(res *LoadResult, corpus *Corpus, cfg *Config, tupleCount int, s
 	if res.OfferedRate > 0 && res.Arrival == "poisson" {
 		r.Arrival = res.Arrival
 	}
+	// Surface a non-default transport; HTTP runs stay byte-identical to before.
+	if res.Transport == "grpc" {
+		r.Transport = res.Transport
+	}
 	if seedDur > 0 {
 		r.SeedDuration = seedDur.String()
 		r.SeedRate = float64(tupleCount) / seedDur.Seconds()
@@ -463,6 +468,9 @@ func (r *Report) Markdown() string {
 	w("| Parameter | Value |")
 	w("|---|---|")
 	w("| Endpoint | %s |", r.Endpoint)
+	if r.Transport == "grpc" {
+		w("| Transport | gRPC |")
+	}
 	w("| Consistency | %s |", r.Consistency)
 	w("| Concurrency | %d workers |", r.Concurrency)
 	if r.OfferedRate > 0 {

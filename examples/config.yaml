@@ -42,6 +42,14 @@ openfga:
   # the default; raise this before assuming the server is broken.
   timeout: 10s
 
+  # gRPC dial target, used only when load.transport is grpc (see below). Unset
+  # derives host:8081 from api_url — the bundled compose stack publishes :8081.
+  # grpc_url: localhost:8081
+
+  # Dial the gRPC endpoint over TLS (system root CAs). Leave false for the
+  # local stack; set true for managed/cloud OpenFGA.
+  # grpc_tls: false
+
 # Compiled model JSON. Export from a .fga file with `fga model transform`.
 # See README.md "Using Your Own Model" for the full procedure.
 model_file: examples/model.json
@@ -222,6 +230,14 @@ load:
   # The list endpoints reuse the corpus triples; their verify_results is a
   # best-effort spot-check (can false-positive under result-cap truncation).
   endpoint: check
+
+  # Wire protocol for the measured phase: http (REST+JSON, default) or grpc.
+  # gRPC is OpenFGA's lower-overhead production path; switching drops the
+  # HTTP+JSON serialization cost out of the client-side numbers. Setup and
+  # probe always use HTTP; only the load loop varies. gRPC dials
+  # openfga.grpc_url (default host:8081). Run both and `fgaperf compare` to
+  # read off the difference.
+  # transport: grpc
 
   # Items per batch-check request. Ignored when endpoint=check.
   batch_size: 20

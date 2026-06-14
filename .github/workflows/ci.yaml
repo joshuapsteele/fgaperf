@@ -37,7 +37,9 @@ jobs:
       - run: go build -o fgaperf .
       - name: Start OpenFGA ${{ matrix.openfga }}
         run: |
-          docker run -d --name openfga -p 8080:8080 openfga/openfga:${{ matrix.openfga }} run
+          # Publish the gRPC port (8081) alongside HTTP (8080) so the gRPC
+          # transport smoke below can reach the server.
+          docker run -d --name openfga -p 8080:8080 -p 8081:8081 openfga/openfga:${{ matrix.openfga }} run
           for i in $(seq 1 30); do
             curl -sf http://localhost:8080/healthz > /dev/null && exit 0
             sleep 1
@@ -53,6 +55,10 @@ jobs:
         run: |
           ./fgaperf all -config examples/config.yaml -warmup 2s -duration 4s -endpoint list-objects
           ./fgaperf all -config examples/config.yaml -warmup 2s -duration 4s -endpoint list-users
+      # Smoke the gRPC transport so a break in the gRPC client (stub drift, dial,
+      # message conversion) fails CI rather than surfacing only in production use.
+      - name: Run the gRPC transport against the example model
+        run: ./fgaperf all -config examples/config.yaml -warmup 2s -duration 8s -transport grpc
       - name: Verify automatic cleanup left no stores behind
         run: |
           count=$(curl -s http://localhost:8080/stores | jq '.stores | length')

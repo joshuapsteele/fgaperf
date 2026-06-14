@@ -6,7 +6,7 @@ states the motivation, a design sketch, the files involved, and acceptance
 criteria. Items are independent unless noted.
 
 _Drafted 2026-06-13, superseding the v1 plan. **The v1 plan is complete** — all
-35 items shipped (one, gRPC, was deferred and is revived here as item 7). The v1
+35 items shipped (one, gRPC, was deferred and is revived here as item 4). The v1
 plan's full per-item completion notes live in git history (this file before
 2026-06-13); a compact index of what shipped is in [Completed in v1](#completed-in-v1)
 at the end. Two prior bug-audit passes (commits `d498d81` and `1102d71`) closed
@@ -170,7 +170,28 @@ deterministic; mean achieved rate ≈ offered; the response-latency tail is
 visibly heavier than `uniform` at the same offered rate against the same server;
 `uniform` output is unchanged.
 
-### 4. gRPC client option (revives deferred v1 item 18)
+### 4. gRPC client option (revives deferred v1 item 18) ✅
+
+Status: **Complete** (2026-06-14) — added `load.transport: http|grpc` (default
+`http`, validated; `-transport` flag override). Extracted a small `LoadClient`
+interface (the four read endpoints plus the churn write/delete) that both the
+HTTP `FGAClient` and a new `GRPCClient` (`client_grpc.go`) satisfy;
+`RunLoad`/`RunSweep`/`runChurn`/the `do*` helpers take the interface. The gRPC
+client is a single tuned `grpc.ClientConn` (generous HTTP/2 windows, no
+interceptors; pre-shared/OIDC auth rides as request metadata) against the pinned
+`github.com/openfga/api` stubs; setup and probe stay on HTTP (principle #3
+preserved). gRPC dials `openfga.grpc_url` (default `host:8081` derived from
+`api_url`; `openfga.grpc_tls` for managed/cloud). The transport is recorded in
+`LoadResult`/`Report` and surfaced on the run-config table for gRPC runs; HTTP
+output is byte-identical (top-level field is `omitempty`). Verification:
+`go vet ./...`; `go test -race` (`client_grpc_test.go`: an in-process fake gRPC
+server drives RunLoad over all four endpoints with zero transport errors,
+write/delete round-trips, context + contextual-tuple + CEL-condition propagation
+through `structpb`, grpc_url derivation, and gRPC-status → error-class mapping);
+end-to-end against a local OpenFGA (HTTP :8080 + gRPC :8081) — gRPC lower at
+every percentile than HTTP for the same closed-loop check workload (p50 1.52 vs
+1.74 ms, p95 3.18 vs 3.64 ms, p99 4.49 vs 4.81 ms; 9642 vs 8380 checks/s), all
+four endpoints error-free over gRPC. CI publishes :8081 and runs a gRPC smoke.
 
 Motivation: OpenFGA's gRPC API is the lower-overhead production path; the HTTP +
 JSON overhead is baked into today's client-side numbers. High-throughput callers

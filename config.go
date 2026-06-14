@@ -35,6 +35,8 @@ type Config struct {
 
 type OpenFGAConfig struct {
 	APIURL    string        `yaml:"api_url"`
+	GRPCURL   string        `yaml:"grpc_url"` // host:port for the gRPC API (load.transport: grpc); empty = derive host:8081 from api_url
+	GRPCTLS   bool          `yaml:"grpc_tls"` // dial the gRPC endpoint over TLS (managed/cloud OpenFGA); false = plaintext (local)
 	StoreName string        `yaml:"store_name"`
 	APIToken  string        `yaml:"api_token"` // pre-shared key auth
 	OIDC      *OIDCConfig   `yaml:"oidc"`      // OIDC client-credentials auth (mutually exclusive with api_token)
@@ -127,8 +129,9 @@ func (t *TargetSpec) UnmarshalYAML(node *yaml.Node) error {
 
 type LoadConfig struct {
 	Concurrency   int           `yaml:"concurrency"`
-	Rate          int           `yaml:"rate"`    // requests/sec; 0 = closed loop
-	Arrival       string        `yaml:"arrival"` // fixed-rate arrival process: uniform (even ticker) | poisson (exponential inter-arrivals)
+	Transport     string        `yaml:"transport"` // wire protocol for the measured phase: http (default) | grpc. Setup/probe always use HTTP.
+	Rate          int           `yaml:"rate"`      // requests/sec; 0 = closed loop
+	Arrival       string        `yaml:"arrival"`   // fixed-rate arrival process: uniform (even ticker) | poisson (exponential inter-arrivals)
 	Warmup        time.Duration `yaml:"warmup"`
 	Duration      time.Duration `yaml:"duration"`
 	Consistency   string        `yaml:"consistency"`    // MINIMIZE_LATENCY | HIGHER_CONSISTENCY
@@ -312,6 +315,11 @@ func (c *Config) validate() error {
 	case "uniform", "poisson":
 	default:
 		return fmt.Errorf("load.arrival must be uniform or poisson, got %q", c.Load.Arrival)
+	}
+	switch c.Load.Transport {
+	case "http", "grpc":
+	default:
+		return fmt.Errorf("load.transport must be http or grpc, got %q", c.Load.Transport)
 	}
 	prob := func(name string, v float64) error {
 		if v < 0 || v > 1 {
@@ -658,6 +666,7 @@ func (c *Config) applyDefaults(fields yamlFieldSet) {
 	def(&c.Load.Consistency, "MINIMIZE_LATENCY")
 	def(&c.Load.Endpoint, "check")
 	def(&c.Load.Arrival, "uniform")
+	def(&c.Load.Transport, "http")
 	defInt(&c.Load.BatchSize, 20, "load", "batch_size")
 	if len(c.Load.Sweep.Rates) > 0 && c.Load.Sweep.StepDuration == 0 && !fields.has("load", "sweep", "step_duration") {
 		c.Load.Sweep.StepDuration = 60 * time.Second
@@ -681,6 +690,7 @@ type Overrides struct {
 	Concurrency *int
 	Endpoint    *string
 	Consistency *string
+	Transport   *string
 	OutputDir   *string
 }
 
@@ -705,6 +715,9 @@ func (c *Config) applyOverrides(o Overrides) error {
 	}
 	if o.Consistency != nil {
 		c.Load.Consistency = *o.Consistency
+	}
+	if o.Transport != nil {
+		c.Load.Transport = *o.Transport
 	}
 	if o.OutputDir != nil {
 		c.OutputDir = *o.OutputDir

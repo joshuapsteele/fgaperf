@@ -15,9 +15,11 @@ latency broken down by relation, [CEL-conditioned](https://openfga.dev/docs/mode
 paths, and [contextual-tuple](https://openfga.dev/docs/interacting/contextual-tuples)
 requests.
 
-fgaperf is a small Go binary that talks to the OpenFGA HTTP API directly. It is
-meant for realistic model-specific testing, where generic load tools do not
-know enough about your authorization graph to generate useful checks.
+fgaperf is a small Go binary that talks to the OpenFGA API directly — HTTP by
+default, or gRPC for the measured phase (`load.transport: grpc`) when you want
+to factor HTTP+JSON overhead out of the client-side numbers. It is meant for
+realistic model-specific testing, where generic load tools do not know enough
+about your authorization graph to generate useful checks.
 
 > New to OpenFGA or load testing? Skim the [Glossary](#glossary) at the bottom
 > first; it defines every term used in the rest of this document and in the
@@ -82,12 +84,23 @@ config edit needed:
 
 The common load knobs are available as flags that override the config after it
 loads: `-duration`, `-warmup`, `-rate`, `-concurrency`, `-endpoint`,
-`-consistency`, and `-output-dir`. Overrides are recorded in the results JSON's
-`resolved_config`, so a run stays reproducible from its output alone. For
-example, sweep a single rate point against the example store:
+`-consistency`, `-transport`, and `-output-dir`. Overrides are recorded in the
+results JSON's `resolved_config`, so a run stays reproducible from its output
+alone. For example, sweep a single rate point against the example store:
 
 ```bash
 ./fgaperf run -config examples/config.yaml -rate 2000 -duration 30s
+```
+
+To measure the gRPC path instead of HTTP+JSON, add `-transport grpc` (it dials
+`openfga.grpc_url`, defaulting to the API host on port 8081). Run the same
+config over both transports and `fgaperf compare` them to read off the
+serialization overhead:
+
+```bash
+./fgaperf all -config examples/config.yaml -output-dir results/http
+./fgaperf all -config examples/config.yaml -output-dir results/grpc -transport grpc
+./fgaperf compare results/http/results-*.json results/grpc/results-*.json
 ```
 
 ## Commands

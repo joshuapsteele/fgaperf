@@ -36,7 +36,9 @@ naming the bad key.
 
 | Field | Default | Description |
 |---|---|---|
-| `openfga.api_url` | `http://localhost:8080` | OpenFGA HTTP API base URL. |
+| `openfga.api_url` | `http://localhost:8080` | OpenFGA HTTP API base URL. Used for setup, probe, and (when `load.transport: http`) the measured phase. |
+| `openfga.grpc_url` | derived | gRPC dial target (`host:port`) for `load.transport: grpc`. Unset derives `host:8081` from `api_url` (OpenFGA's default gRPC port), so the bundled compose stack and the common localhost case need no extra config. |
+| `openfga.grpc_tls` | `false` | Dial the gRPC endpoint over TLS (system root CAs). Leave `false` for the local compose stack; set `true` for managed/cloud OpenFGA. Only used when `load.transport: grpc`. |
 | `openfga.store_name` | `fgaperf` | Name used when creating the store. `cleanup -all-stores` matches on this. |
 | `openfga.api_token` | unset | Pre-shared API token when `OPENFGA_AUTHN_METHOD=preshared`. |
 | `openfga.oidc` | unset | OIDC client-credentials auth for managed/cloud OpenFGA (mutually exclusive with `api_token`). Sub-keys: `token_url`, `client_id`, `client_secret` (required), `audience`, `scopes` (optional). The token is fetched and refreshed in the background, off the request hot path; `client_secret` is redacted in the results snapshot. |
@@ -125,6 +127,7 @@ write churn).
 | Field | Default | Description |
 |---|---|---|
 | `load.endpoint` | `check` | `check` (one tuple per HTTP request), `batch-check` (many per request), `list-objects` ("which objects of a type can this user access?"), or `list-users` ("which users can access this object?"). The list endpoints reuse the corpus's (user, relation, object) triples and add a result-set-size distribution to the findings; their `verify_results` is a best-effort spot-check (each entry's own object/user should appear in its own listing) that can false-positive under OpenFGA's result-cap truncation. |
+| `load.transport` | `http` | Wire protocol for the **measured phase**: `http` (REST + JSON) or `grpc`. gRPC is OpenFGA's lower-overhead production path; switching removes the HTTP+JSON serialization cost from the client-side numbers, so the run measures closer to what the server actually costs. Setup and probe always use HTTP; only the load loop varies. gRPC dials `openfga.grpc_url` (default `host:8081`) over a single tuned connection. All four endpoints work over either transport. |
 | `load.batch_size` | `20` | Tuples per `batch-check` request. Ignored for `check`. |
 | `load.concurrency` | `16` | Parallel workers issuing requests. Cap by the concurrency of your real callers. |
 | `load.rate` | `0` | Fixed offered requests/sec. `0` = closed loop. Mutually exclusive with `load.sweep`. |
@@ -165,6 +168,29 @@ here. Pick the mode your real callers use:
 - Most read paths → `MINIMIZE_LATENCY`.
 - UI flows that re-check immediately after a Write → `HIGHER_CONSISTENCY`.
 - A mix → run twice and compare with `fgaperf compare`.
+
+### HTTP vs gRPC transport
+
+`load.transport` chooses the wire protocol for the measured phase. HTTP (the
+default) talks the REST + JSON API; gRPC talks OpenFGA's protobuf API over a
+single multiplexed HTTP/2 connection. The server does the same authorization
+work either way — what differs is the per-request serialization and framing
+overhead the client pays, which is folded into every client-side latency
+number.
+
+Use gRPC when:
+
+- Your real high-throughput callers use gRPC and you want numbers that match.
+- You want to factor HTTP+JSON cost out of the client-side view to get closer
+  to "what does the server actually cost per check".
+
+To quantify the difference, run the same config twice (once per transport,
+same `random_seed`) and `fgaperf compare` the two results — the client-side
+percentiles drop by the serialization overhead while throughput rises
+correspondingly in closed-loop mode. Setup and probe always use HTTP, so the
+seeded store and corpus are identical across the two runs. The gRPC endpoint
+is `openfga.grpc_url` (default `host:8081`, plaintext; set `openfga.grpc_tls`
+for managed/cloud).
 
 ### When `verify_results` flags mismatches
 

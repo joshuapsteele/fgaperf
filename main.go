@@ -112,6 +112,7 @@ func main() {
 	concFlag := fs.Int("concurrency", 0, "override load.concurrency")
 	endpointFlag := fs.String("endpoint", "", "override load.endpoint (check|batch-check|list-objects|list-users)")
 	consistencyFlag := fs.String("consistency", "", "override load.consistency (MINIMIZE_LATENCY|HIGHER_CONSISTENCY)")
+	transportFlag := fs.String("transport", "", "override load.transport (http|grpc)")
 	outDirFlag := fs.String("output-dir", "", "override output_dir")
 	againstBaseline := fs.String("against-baseline", "", "compare: compare one results JSON against a saved baseline")
 	maxRegression := fs.String("max-regression", defaultMaxRegression, "compare -against-baseline: comma-separated thresholds, e.g. p99=10%,throughput=-5%")
@@ -142,6 +143,8 @@ func main() {
 			ov.Endpoint = endpointFlag
 		case "consistency":
 			ov.Consistency = consistencyFlag
+		case "transport":
+			ov.Transport = transportFlag
 		case "output-dir":
 			ov.OutputDir = outDirFlag
 		}
@@ -458,8 +461,21 @@ func run(client *FGAClient, cfg *Config, st *State) error {
 	if err := validateStateCorpus(st, corpus); err != nil {
 		return err
 	}
-	fmt.Printf("load: endpoint=%s concurrency=%d rate=%v warmup=%s duration=%s consistency=%s\n",
-		cfg.Load.Endpoint, cfg.Load.Concurrency, cfg.Load.Rate, cfg.Load.Warmup, cfg.Load.Duration, cfg.Load.Consistency)
+	fmt.Printf("load: endpoint=%s transport=%s concurrency=%d rate=%v warmup=%s duration=%s consistency=%s\n",
+		cfg.Load.Endpoint, cfg.Load.Transport, cfg.Load.Concurrency, cfg.Load.Rate, cfg.Load.Warmup, cfg.Load.Duration, cfg.Load.Consistency)
+	// The measured phase runs over the configured transport; setup and probe
+	// already ran over HTTP on `client`. For gRPC we open a dedicated connection
+	// here and close it when the run finishes.
+	var loadClient LoadClient = client
+	if cfg.Load.Transport == "grpc" {
+		gc, err := NewGRPCClient(cfg.OpenFGA)
+		if err != nil {
+			return fmt.Errorf("gRPC transport: %w", err)
+		}
+		defer gc.Close()
+		fmt.Printf("load transport: gRPC -> %s\n", grpcAddr(cfg.OpenFGA))
+		loadClient = gc
+	}
 	var scraper *MetricsScraper
 	if cfg.Metrics.PrometheusURL != "" {
 		scraper = NewMetricsScraper(cfg.Metrics.PrometheusURL)
@@ -467,7 +483,7 @@ func run(client *FGAClient, cfg *Config, st *State) error {
 	seedDur, _ := time.ParseDuration(st.SeedDuration)
 	var report *Report
 	if len(cfg.Load.Sweep.Rates) > 0 {
-		results, err := RunSweep(client, corpus, cfg, scraper)
+		results, err := RunSweep(loadClient, corpus, cfg, scraper)
 		if err != nil {
 			return err
 		}
@@ -478,7 +494,7 @@ func run(client *FGAClient, cfg *Config, st *State) error {
 			fmt.Println("sweep knee: none (every step saturated)")
 		}
 	} else {
-		res, err := RunLoad(client, corpus, cfg, scraper)
+		res, err := RunLoad(loadClient, corpus, cfg, scraper)
 		if err != nil {
 			return err
 		}

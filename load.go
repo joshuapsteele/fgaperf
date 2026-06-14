@@ -44,6 +44,7 @@ type Sample struct {
 
 type LoadResult struct {
 	Endpoint        string
+	Transport       string // wire protocol used for the measured phase: http | grpc
 	Consistency     string
 	Concurrency     int
 	OfferedRate     int
@@ -72,7 +73,7 @@ type LoadResult struct {
 // fresh nonce-scoped instance IDs. It returns latency stats from the measured
 // phase. A dedicated goroutine, not the check workers: write latency must not
 // occupy check-worker slots.
-func runChurn(client *FGAClient, corpus *Corpus, cfg *Config, start, warmupEnd, deadline time.Time) Stats {
+func runChurn(client LoadClient, corpus *Corpus, cfg *Config, start, warmupEnd, deadline time.Time) Stats {
 	templates := corpus.ChurnTemplates
 	rng := rand.New(rand.NewSource(cfg.RandomSeed + 999983))
 	nonce := time.Now().UnixNano() % 1_000_000 // distinct IDs across runs against the same store
@@ -351,6 +352,9 @@ func (w *sampleWriter) Close() error {
 // classifyErr buckets a request error for reporting. The classes are coarse on
 // purpose; ErrorSamples carries the verbatim strings for diagnosis.
 func classifyErr(err error) string {
+	if class, ok := grpcErrClass(err); ok {
+		return class
+	}
 	var he *HTTPError
 	if errors.As(err, &he) {
 		if he.StatusCode >= 500 {
@@ -421,13 +425,14 @@ func (g *arrivalGen) next() time.Duration {
 // RunLoad replays the corpus. scraper may be nil; when set, server metrics
 // are snapshotted at the warmup/measured boundary and after the last worker
 // exits, off the request path.
-func RunLoad(client *FGAClient, corpus *Corpus, cfg *Config, scraper *MetricsScraper) (*LoadResult, error) {
+func RunLoad(client LoadClient, corpus *Corpus, cfg *Config, scraper *MetricsScraper) (*LoadResult, error) {
 	if len(corpus.Entries) == 0 {
 		return nil, fmt.Errorf("corpus is empty; run probe first")
 	}
 	lc := cfg.Load
 	res := &LoadResult{
 		Endpoint:    lc.Endpoint,
+		Transport:   lc.Transport,
 		Consistency: lc.Consistency,
 		Concurrency: lc.Concurrency,
 		OfferedRate: lc.Rate,
@@ -679,7 +684,7 @@ func RunLoad(client *FGAClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 // RunSweep steps through the configured offered rates against the same corpus
 // and store. Warmup runs once, before the first step; later steps inherit a
 // warm server and connection pool.
-func RunSweep(client *FGAClient, corpus *Corpus, cfg *Config, scraper *MetricsScraper) ([]*LoadResult, error) {
+func RunSweep(client LoadClient, corpus *Corpus, cfg *Config, scraper *MetricsScraper) ([]*LoadResult, error) {
 	sw := cfg.Load.Sweep
 	results := make([]*LoadResult, 0, len(sw.Rates))
 	for i, rate := range sw.Rates {
@@ -708,7 +713,7 @@ func RunSweep(client *FGAClient, corpus *Corpus, cfg *Config, scraper *MetricsSc
 	return results, nil
 }
 
-func doCheck(client *FGAClient, picker *corpusPicker, mism *mismatchRecorder, corpus *Corpus, cfg *Config, rng *rand.Rand) Sample {
+func doCheck(client LoadClient, picker *corpusPicker, mism *mismatchRecorder, corpus *Corpus, cfg *Config, rng *rand.Rand) Sample {
 	e := picker.pick(rng)
 	t0 := time.Now()
 	allowed, err := client.Check(corpus.StoreID, CheckRequest{
@@ -731,7 +736,7 @@ func doCheck(client *FGAClient, picker *corpusPicker, mism *mismatchRecorder, co
 	return s
 }
 
-func doBatch(client *FGAClient, picker *corpusPicker, mism *mismatchRecorder, corpus *Corpus, cfg *Config, rng *rand.Rand) Sample {
+func doBatch(client LoadClient, picker *corpusPicker, mism *mismatchRecorder, corpus *Corpus, cfg *Config, rng *rand.Rand) Sample {
 	n := cfg.Load.BatchSize
 	items := make([]BatchCheckItem, n)
 	conditioned := false
@@ -808,7 +813,7 @@ func doBatch(client *FGAClient, picker *corpusPicker, mism *mismatchRecorder, co
 // listing iff the probe found the pair allowed. It can false-positive if the
 // listing is truncated (OpenFGA caps list-objects results), so it is best-effort
 // — latency and result-set size are the primary signals.
-func doListObjects(client *FGAClient, picker *corpusPicker, mism *mismatchRecorder, corpus *Corpus, cfg *Config, rng *rand.Rand) Sample {
+func doListObjects(client LoadClient, picker *corpusPicker, mism *mismatchRecorder, corpus *Corpus, cfg *Config, rng *rand.Rand) Sample {
 	e := picker.pick(rng)
 	t0 := time.Now()
 	resp, err := client.ListObjects(corpus.StoreID, ListObjectsRequest{
@@ -849,7 +854,7 @@ func doListObjects(client *FGAClient, picker *corpusPicker, mism *mismatchRecord
 // <object>?". The entry's own user should appear in the listing iff the pair
 // was allowed; a typed wildcard (user:*) also counts as present. Best-effort,
 // same truncation caveat as doListObjects.
-func doListUsers(client *FGAClient, picker *corpusPicker, mism *mismatchRecorder, corpus *Corpus, cfg *Config, rng *rand.Rand) Sample {
+func doListUsers(client LoadClient, picker *corpusPicker, mism *mismatchRecorder, corpus *Corpus, cfg *Config, rng *rand.Rand) Sample {
 	e := picker.pick(rng)
 	objType, objID, _ := strings.Cut(e.Object, ":")
 	userType := typeOfUser(e.User)

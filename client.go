@@ -24,6 +24,23 @@ type FGAClient struct {
 	http    *http.Client
 }
 
+// LoadClient is the subset of the OpenFGA API the measured load phase calls:
+// the four read endpoints plus the background-churn writes. Both the HTTP
+// FGAClient and the gRPC GRPCClient implement it, so `load.transport: grpc`
+// swaps the load loop onto gRPC while setup and probe stay on HTTP. Keeping the
+// interface this small is deliberate — it's the seam the thin hot path is
+// allowed to vary across, and nothing else.
+type LoadClient interface {
+	Check(storeID string, req CheckRequest) (bool, error)
+	BatchCheck(storeID string, req BatchCheckRequest) (*BatchCheckResponse, error)
+	ListObjects(storeID string, req ListObjectsRequest) (*ListObjectsResponse, error)
+	ListUsers(storeID string, req ListUsersRequest) (*ListUsersResponse, error)
+	WriteTuples(storeID, modelID string, tuples []TupleKey) error
+	DeleteTuples(storeID, modelID string, tuples []TupleKey) error
+}
+
+var _ LoadClient = (*FGAClient)(nil)
+
 func NewFGAClient(cfg OpenFGAConfig, maxConns int) *FGAClient {
 	tr := &http.Transport{
 		MaxIdleConns:        maxConns * 2,
@@ -348,12 +365,16 @@ type BatchCheckRequest struct {
 }
 
 type BatchCheckResponse struct {
-	Result map[string]struct {
-		Allowed bool `json:"allowed"`
-		Error   *struct {
-			Message string `json:"message"`
-		} `json:"error,omitempty"`
-	} `json:"result"`
+	Result map[string]BatchCheckResult `json:"result"`
+}
+
+type BatchCheckResult struct {
+	Allowed bool             `json:"allowed"`
+	Error   *BatchCheckError `json:"error,omitempty"`
+}
+
+type BatchCheckError struct {
+	Message string `json:"message"`
 }
 
 func (c *FGAClient) BatchCheck(storeID string, req BatchCheckRequest) (*BatchCheckResponse, error) {
@@ -415,11 +436,13 @@ type ListUsersResponse struct {
 // shapes is set: a concrete user object, a userset, or a typed wildcard
 // (user:*). We only need Object and Wildcard for verification.
 type ListUsersUser struct {
-	Object   *ListUsersObject `json:"object,omitempty"`
-	Userset  json.RawMessage  `json:"userset,omitempty"`
-	Wildcard *struct {
-		Type string `json:"type"`
-	} `json:"wildcard,omitempty"`
+	Object   *ListUsersObject   `json:"object,omitempty"`
+	Userset  json.RawMessage    `json:"userset,omitempty"`
+	Wildcard *ListUsersWildcard `json:"wildcard,omitempty"`
+}
+
+type ListUsersWildcard struct {
+	Type string `json:"type"`
 }
 
 func (c *FGAClient) ListUsers(storeID string, req ListUsersRequest) (*ListUsersResponse, error) {
