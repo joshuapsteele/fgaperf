@@ -198,6 +198,7 @@ replay:
 | `load.transport` | `http` | Wire protocol for the **measured phase**: `http` (REST + JSON) or `grpc`. gRPC is OpenFGA's lower-overhead production path; switching removes the HTTP+JSON serialization cost from the client-side numbers, so the run measures closer to what the server actually costs. Setup and probe always use HTTP; only the load loop varies. gRPC dials `openfga.grpc_url` (default `host:8081`) over a single tuned connection. All four endpoints work over either transport. |
 | `load.batch_size` | `20` | Tuples per `batch-check` request. Ignored for `check`. |
 | `load.concurrency` | `16` | Parallel workers issuing requests. Cap by the concurrency of your real callers. |
+| `load.client_id` | `0` | Distinct non-negative load-generator ID for distributed runs. It offsets the request-selection, poisson-arrival, and churn RNG streams so several clients can replay the same corpus without walking the same pseudo-random sequence. Set a unique value per process, or pass `-client-id N`; merge the resulting reports with `fgaperf merge`. |
 | `load.rate` | `0` | Fixed offered requests/sec. `0` = closed loop. Mutually exclusive with `load.sweep`. |
 | `load.warmup` | `10s` | Leading slice discarded so caches/connections steady-state before measurement. |
 | `load.duration` | `60s` | Measured window after warmup. |
@@ -223,6 +224,29 @@ replay:
 - **Sweep**: automates the rate search. The report headlines the
   **saturation knee** — the highest step that kept up (and stayed under
   `slo_p99` if set).
+
+### Distributed load generation
+
+When one fgaperf process is bounded by its host CPU or NIC, run several
+generators against the same seeded store and corpus:
+
+```bash
+./fgaperf setup -config config.yaml
+./fgaperf probe -config config.yaml
+
+./fgaperf run -config config.yaml -client-id 1 -output-dir results/client-1
+./fgaperf run -config config.yaml -client-id 2 -output-dir results/client-2
+./fgaperf merge -output-dir results/merged results/client-*/results-*.json
+```
+
+Each client must use the same workload shape (`endpoint`, `transport`,
+`warmup`, `duration`, corpus, and model/store), but should use a distinct
+`load.client_id`. The merged report sums concurrency, offered/achieved rates,
+throughput, errors, and mismatches, then merges latency percentiles from the
+digest sketches embedded in each results JSON. Server-side Prometheus sections
+are intentionally not merged, because several clients scraping the same shared
+OpenFGA counters would double-count the same server traffic. Sweep reports are
+not mergeable yet; merge one fixed-rate or closed-loop run at a time.
 
 ### `MINIMIZE_LATENCY` vs `HIGHER_CONSISTENCY`
 

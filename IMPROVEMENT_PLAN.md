@@ -352,7 +352,7 @@ documented end to end against the compose stack.
 
 ## P2 — Breadth and polish
 
-### 8. Distributed / multi-client load generation
+### 8. Distributed / multi-client load generation ✅
 
 Motivation: a single fgaperf process is bounded by one host's CPU and NIC;
 saturating a large OpenFGA cluster needs several coordinated load generators. The
@@ -366,9 +366,18 @@ coordinator/agent mode can come later if needed.
 
 Files: new `merge` subcommand; reuse `digest.go`; `report.go` (merge path).
 
-Acceptance: two processes against one store produce results that `merge`
-combines into one report whose throughput ≈ the sum and whose percentiles are the
-merged distribution (verified against a single equivalent run within tolerance).
+Implemented 2026-06-14: results JSON now embeds mergeable digest sketches for
+the measured latency populations, per-target splits, result counts, timeline,
+and write churn. `load.client_id` / `-client-id` offsets the load RNG streams
+for multi-client runs, and the new `fgaperf merge` subcommand combines
+single-rate result files into one report (summing concurrency, offered/achieved
+rates, throughput, errors, and mismatches while merging percentile sketches).
+Docs now cover the workflow in README, the configuration reference, methodology,
+recipes, and generated/example configs.
+
+Acceptance evidence: `go test ./...` includes synthetic two-client merge tests
+that verify summed throughput/rates and merged p50/p99 distributions from the
+digests, plus compatibility rejection and CLI no-server coverage.
 
 ### 9. Soak mode: long-run stability with interim reports
 

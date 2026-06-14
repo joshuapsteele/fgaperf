@@ -84,9 +84,10 @@ config edit needed:
 
 The common load knobs are available as flags that override the config after it
 loads: `-duration`, `-warmup`, `-rate`, `-concurrency`, `-endpoint`,
-`-consistency`, `-transport`, and `-output-dir`. Overrides are recorded in the
-results JSON's `resolved_config`, so a run stays reproducible from its output
-alone. For example, sweep a single rate point against the example store:
+`-consistency`, `-transport`, `-client-id`, and `-output-dir`. Overrides are
+recorded in the results JSON's `resolved_config`, so a run stays reproducible
+from its output alone. For example, run one fixed-rate point against the
+example store:
 
 ```bash
 ./fgaperf run -config examples/config.yaml -rate 2000 -duration 30s
@@ -122,6 +123,9 @@ serialization overhead:
 # diff two runs (latency deltas, server-side deltas, config differences):
 ./fgaperf compare -config examples/config.yaml results/results-A.json results/results-B.json
 
+# merge distributed load-generator reports:
+./fgaperf merge -output-dir results/merged results/client-*/results-*.json
+
 # save a compact regression baseline, then gate a later run against it:
 ./fgaperf baseline save results/results-A.json
 ./fgaperf compare -against-baseline results/baseline-<stamp>.json results/results-B.json
@@ -147,6 +151,22 @@ walks through the common first-week failures. For common tuning questions, see
 tables the latency and server-side deltas, names every config key that
 differed between the runs, and calls out anything that makes the comparison
 apples-to-oranges (different endpoint, corpus size, duration, or concurrency).
+
+`merge` is for distributed load generation. Run `setup` and `probe` once, copy
+or share the same `config.yaml`, `.fgaperf-state.json`, and `corpus.json` to
+each load-generator host, then run `fgaperf run` on each host with a distinct
+`-client-id` and output directory:
+
+```bash
+./fgaperf run -config config.yaml -client-id 1 -output-dir results/client-1
+./fgaperf run -config config.yaml -client-id 2 -output-dir results/client-2
+./fgaperf merge -output-dir results/merged results/client-*/results-*.json
+```
+
+The merged report sums concurrency, offered/achieved rates, throughput, errors,
+and mismatches, and merges latency percentiles from the digest sketches embedded
+in each results JSON. Sweep reports are not mergeable yet; run one fixed rate
+per client, then merge that rate's result files.
 
 ### Regression gating
 

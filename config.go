@@ -146,6 +146,7 @@ type ReplayConfig struct {
 
 type LoadConfig struct {
 	Concurrency   int           `yaml:"concurrency"`
+	ClientID      int           `yaml:"client_id"` // distinct RNG stream for multi-client runs; 0 = default single client
 	Transport     string        `yaml:"transport"` // wire protocol for the measured phase: http (default) | grpc. Setup/probe always use HTTP.
 	Rate          int           `yaml:"rate"`      // requests/sec; 0 = closed loop
 	Arrival       string        `yaml:"arrival"`   // fixed-rate arrival process: uniform (even ticker) | poisson (exponential inter-arrivals)
@@ -488,6 +489,9 @@ func (c *Config) validate() error {
 	if c.Load.WriteRate < 0 {
 		return fmt.Errorf("load.write_rate must be >= 0, got %d", c.Load.WriteRate)
 	}
+	if c.Load.ClientID < 0 {
+		return fmt.Errorf("load.client_id must be >= 0, got %d", c.Load.ClientID)
+	}
 	if c.OpenFGA.Timeout < 0 {
 		return fmt.Errorf("openfga.timeout must be >= 0, got %v", c.OpenFGA.Timeout)
 	}
@@ -717,6 +721,7 @@ type Overrides struct {
 	Warmup      *time.Duration
 	Rate        *int
 	Concurrency *int
+	ClientID    *int
 	Endpoint    *string
 	Consistency *string
 	Transport   *string
@@ -738,6 +743,9 @@ func (c *Config) applyOverrides(o Overrides) error {
 	}
 	if o.Concurrency != nil {
 		c.Load.Concurrency = *o.Concurrency
+	}
+	if o.ClientID != nil {
+		c.Load.ClientID = *o.ClientID
 	}
 	if o.Endpoint != nil {
 		c.Load.Endpoint = *o.Endpoint

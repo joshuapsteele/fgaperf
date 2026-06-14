@@ -24,6 +24,25 @@ Run:
 The findings Summary and Rate sweep table mark the saturation knee: the
 highest offered rate that kept up and stayed under the optional p99 SLO.
 
+## Saturate With Multiple Load Generators
+
+Seed and probe once, then run the same corpus from several clients. Give each
+client a distinct ID and output directory:
+
+```bash
+./fgaperf setup -config config.yaml
+./fgaperf probe -config config.yaml
+
+./fgaperf run -config config.yaml -client-id 1 -output-dir results/client-1
+./fgaperf run -config config.yaml -client-id 2 -output-dir results/client-2
+./fgaperf merge -output-dir results/merged results/client-*/results-*.json
+```
+
+Use the same `load.rate` on every client when you want an even split, or set a
+per-client rate and let `merge` sum the offered and achieved rates. The merged
+report combines client-side latency digests and throughput; inspect server-side
+metrics separately so shared Prometheus counters are not double-counted.
+
 ## Measure Cache Impact
 
 Run the same seeded store twice, changing only consistency:

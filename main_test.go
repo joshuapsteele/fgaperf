@@ -140,6 +140,7 @@ openfga:
 		{"baseline", "-config", cfgPath, "save", reportA},
 		{"compare", "-config", cfgPath, reportA, reportB},
 		{"compare", "-config", cfgPath, "-against-baseline", baselinePath, reportA},
+		{"merge", "-config", cfgPath, reportA, reportB},
 	}
 	for _, args := range commands {
 		runCLIHelper(t, args...)

@@ -22,6 +22,7 @@ type Report struct {
 	Transport         string                       `json:"transport,omitempty"` // measured-phase wire protocol when non-default; "" = http
 	Consistency       string                       `json:"consistency"`
 	Concurrency       int                          `json:"concurrency"`
+	ClientID          int                          `json:"client_id,omitempty"`
 	OfferedRate       int                          `json:"offered_rate"`
 	Arrival           string                       `json:"arrival,omitempty"`               // fixed-rate arrival process when non-default; "" = uniform/closed-loop
 	AchievedRate      float64                      `json:"achieved_rate_per_sec,omitempty"` // fixed-rate only: measured requests / measured window
@@ -59,8 +60,20 @@ type Report struct {
 	Environment       Environment                  `json:"environment"`
 	ResolvedConfig    map[string]any               `json:"resolved_config,omitempty"` // post-defaults config, credentials redacted
 	MismatchFile      string                       `json:"mismatch_file,omitempty"`   // written by Save when mismatches occurred
+	Digests           *ReportDigests               `json:"digests,omitempty"`         // mergeable bounded-memory sketches for distributed aggregation
+	MergedFrom        []MergedInput                `json:"merged_from,omitempty"`
 
 	mismatchRecords []MismatchRecord // written to MismatchFile by Save
+}
+
+// MergedInput records one source report folded into a merged report.
+type MergedInput struct {
+	File        string  `json:"file"`
+	ClientID    int     `json:"client_id,omitempty"`
+	Concurrency int     `json:"concurrency"`
+	OfferedRate int     `json:"offered_rate,omitempty"`
+	Throughput  float64 `json:"throughput_per_sec"`
+	Requests    int     `json:"requests"`
 }
 
 // Environment records where the client side of the measurement ran.
@@ -270,6 +283,7 @@ func BuildSweepReport(results []*LoadResult, corpus *Corpus, cfg *Config, tupleC
 }
 
 func BuildReport(res *LoadResult, corpus *Corpus, cfg *Config, tupleCount int, seedDur time.Duration) *Report {
+	lst := res.loadStats()
 	r := &Report{
 		GeneratedAt:    time.Now().UTC(),
 		ToolVersion:    toolVersion,
@@ -277,6 +291,7 @@ func BuildReport(res *LoadResult, corpus *Corpus, cfg *Config, tupleCount int, s
 		Endpoint:       res.Endpoint,
 		Consistency:    res.Consistency,
 		Concurrency:    res.Concurrency,
+		ClientID:       cfg.Load.ClientID,
 		OfferedRate:    res.OfferedRate,
 		DroppedSlots:   res.DroppedSlots,
 		Warmup:         res.Warmup.String(),
@@ -299,6 +314,7 @@ func BuildReport(res *LoadResult, corpus *Corpus, cfg *Config, tupleCount int, s
 			GoVersion: runtime.Version(),
 		},
 		ResolvedConfig: cfg.Resolved(),
+		Digests:        reportDigestsFromLoadStats(lst, res.OfferedRate > 0),
 
 		mismatchRecords: res.MismatchRecords,
 	}
@@ -315,7 +331,6 @@ func BuildReport(res *LoadResult, corpus *Corpus, cfg *Config, tupleCount int, s
 		r.SeedDuration = seedDur.String()
 		r.SeedRate = float64(tupleCount) / seedDur.Seconds()
 	}
-	lst := res.loadStats()
 	r.Overall = lst.overall.Stats()
 	r.Conditioned = lst.conditioned.Stats()
 	r.Unconditioned = lst.unconditioned.Stats()
@@ -348,6 +363,10 @@ func BuildReport(res *LoadResult, corpus *Corpus, cfg *Config, tupleCount int, s
 		r.WriteRate = res.WriteRate
 		ws := res.WriteStats
 		r.WriteChurn = &ws
+		if r.Digests != nil {
+			wd := statsDigestFromLatencyStats(res.writeStats)
+			r.Digests.WriteChurn = &wd
+		}
 	}
 	r.ResultCounts = lst.resultCounts.Stats()
 	r.Timeline = lst.timeline.Buckets()
@@ -477,6 +496,11 @@ func (r *Report) Markdown() string {
 	}
 	w("| Consistency | %s |", r.Consistency)
 	w("| Concurrency | %d workers |", r.Concurrency)
+	if len(r.MergedFrom) > 0 {
+		w("| Load clients | %d merged reports |", len(r.MergedFrom))
+	} else if r.ClientID > 0 {
+		w("| Client ID | %d |", r.ClientID)
+	}
 	if r.OfferedRate > 0 {
 		if r.Arrival == "poisson" {
 			w("| Offered rate | %d req/s (poisson arrival) |", r.OfferedRate)
@@ -512,6 +536,10 @@ func (r *Report) Markdown() string {
 	w("")
 	w("*Throughput and latency over the measured window. The Population column slices the same set of requests different ways: \"All checks\" is everything; the CEL/contextual rows split out paths that touched a CEL condition or carried request-scoped tuples. Compare populations of similar graph depth for a clean read.*")
 	w("")
+	if len(r.MergedFrom) > 0 {
+		w("This report merges %d client-side result files. Concurrency, offered rate, achieved rate, throughput, errors, and mismatches are summed; latency percentiles are merged from each file's digest sketches.", len(r.MergedFrom))
+		w("")
+	}
 	if len(r.Sweep) > 0 {
 		if r.SweepKneeRate > 0 {
 			w("This run swept %d offered rates; this section and the per-relation table reflect the knee step at %d req/s — the highest rate the server sustained%s. The full curve is in the Rate sweep section below.",

@@ -276,6 +276,12 @@ load:
   # piles queueing into the same backend.
   concurrency: 16
 
+  # Distinct non-negative load-generator ID for distributed runs. Set a unique
+  # value per fgaperf process (or pass -client-id) so multiple clients replay
+  # the same corpus with different request RNG streams, then combine the result
+  # JSON files with `fgaperf merge`.
+  # client_id: 1
+
   # Fixed offered requests/sec. 0 = closed loop (each worker issues the next
   # request as soon as the previous returns; useful for finding saturation).
   # > 0 = pace the offered load at this rate (useful for measuring latency

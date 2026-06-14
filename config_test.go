@@ -137,6 +137,7 @@ func TestConfigValidation(t *testing.T) {
 		"bad contextual key":           "contextual:\n  relations: [viewer]\n",
 		"missing pool":                 "conditions:\n  has_scope:\n    params:\n      scopes: {pool: nope}\n",
 		"negative rate":                "load:\n  rate: -5\n",
+		"negative client id":           "load:\n  client_id: -1\n",
 		"negative concurrency":         "load:\n  concurrency: -1\n",
 		"zero concurrency":             "load:\n  concurrency: 0\n",
 		"negative openfga timeout":     "openfga:\n  timeout: -1s\n",
@@ -313,12 +314,13 @@ func TestApplyOverrides(t *testing.T) {
 	}
 	dur := 5 * time.Second
 	rate := 1234
+	clientID := 3
 	endpoint := "batch-check"
 	out := "/tmp/elsewhere"
-	if err := cfg.applyOverrides(Overrides{Duration: &dur, Rate: &rate, Endpoint: &endpoint, OutputDir: &out}); err != nil {
+	if err := cfg.applyOverrides(Overrides{Duration: &dur, Rate: &rate, ClientID: &clientID, Endpoint: &endpoint, OutputDir: &out}); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Load.Duration != dur || cfg.Load.Rate != rate || cfg.Load.Endpoint != endpoint || cfg.OutputDir != out {
+	if cfg.Load.Duration != dur || cfg.Load.Rate != rate || cfg.Load.ClientID != clientID || cfg.Load.Endpoint != endpoint || cfg.OutputDir != out {
 		t.Errorf("overrides not applied: %+v", cfg.Load)
 	}
 	if cfg.Load.Warmup == 0 || cfg.Load.Consistency == "" {

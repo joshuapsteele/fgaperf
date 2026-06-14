@@ -131,6 +131,66 @@ func latencyBucketLower(ns int64) int64 {
 	return (ns / scale) * scale
 }
 
+// StatsDigest is the JSON form of latencyStats. It keeps the mergeable latency
+// sketch, item/error counts, and enough summary data to rebuild Stats without
+// retaining raw samples.
+type StatsDigest struct {
+	Count   int           `json:"count"`
+	Items   int           `json:"items"`
+	Errors  int           `json:"errors"`
+	SumNs   float64       `json:"sum_ns"`
+	Min     time.Duration `json:"min_ns"`
+	Max     time.Duration `json:"max_ns"`
+	Buckets map[int64]int `json:"buckets,omitempty"`
+}
+
+func statsDigestFromLatencyStats(s latencyStats) StatsDigest {
+	d := StatsDigest{
+		Count:  s.digest.count,
+		Items:  s.items,
+		Errors: s.errors,
+		SumNs:  s.digest.sumNs,
+		Min:    s.digest.min,
+		Max:    s.digest.max,
+	}
+	if len(s.digest.buckets) > 0 {
+		d.Buckets = make(map[int64]int, len(s.digest.buckets))
+		for b, n := range s.digest.buckets {
+			d.Buckets[b] = n
+		}
+	}
+	return d
+}
+
+func (d StatsDigest) latencyStats() latencyStats {
+	s := latencyStats{
+		items:  d.Items,
+		errors: d.Errors,
+		digest: latencyDigest{
+			count:   d.Count,
+			sumNs:   d.SumNs,
+			min:     d.Min,
+			max:     d.Max,
+			buckets: map[int64]int{},
+		},
+	}
+	if len(d.Buckets) > 0 {
+		s.digest.buckets = make(map[int64]int, len(d.Buckets))
+		for b, n := range d.Buckets {
+			s.digest.buckets[b] = n
+		}
+	}
+	return s
+}
+
+func (d StatsDigest) Stats() Stats {
+	return d.latencyStats().Stats()
+}
+
+func (d StatsDigest) IsZero() bool {
+	return d.Count == 0 && d.Items == 0 && d.Errors == 0 && len(d.Buckets) == 0
+}
+
 type latencyStats struct {
 	digest latencyDigest
 	items  int
@@ -198,6 +258,32 @@ func (a *countStatsAccumulator) Add(v int) {
 	a.values[v]++
 }
 
+func (a *countStatsAccumulator) Merge(other countStatsAccumulator) {
+	if other.responses == 0 {
+		return
+	}
+	if a.values == nil {
+		a.values = map[int]int{}
+	}
+	if a.responses == 0 {
+		a.min = other.min
+		a.max = other.max
+	} else {
+		if other.min < a.min {
+			a.min = other.min
+		}
+		if other.max > a.max {
+			a.max = other.max
+		}
+	}
+	a.responses += other.responses
+	a.empty += other.empty
+	a.total += other.total
+	for v, n := range other.values {
+		a.values[v] += n
+	}
+}
+
 func (a *countStatsAccumulator) Stats() *CountStats {
 	if a.responses == 0 {
 		return nil
@@ -234,6 +320,54 @@ func (a *countStatsAccumulator) quantile(q float64) int {
 		}
 	}
 	return a.max
+}
+
+type CountStatsDigest struct {
+	Values    map[int]int `json:"values,omitempty"`
+	Responses int         `json:"responses"`
+	Empty     int         `json:"empty"`
+	Min       int         `json:"min"`
+	Max       int         `json:"max"`
+	Total     int64       `json:"total"`
+}
+
+func countStatsDigestFromAccumulator(a countStatsAccumulator) CountStatsDigest {
+	d := CountStatsDigest{
+		Responses: a.responses,
+		Empty:     a.empty,
+		Min:       a.min,
+		Max:       a.max,
+		Total:     a.total,
+	}
+	if len(a.values) > 0 {
+		d.Values = make(map[int]int, len(a.values))
+		for v, n := range a.values {
+			d.Values[v] = n
+		}
+	}
+	return d
+}
+
+func (d CountStatsDigest) accumulator() countStatsAccumulator {
+	a := countStatsAccumulator{
+		responses: d.Responses,
+		empty:     d.Empty,
+		min:       d.Min,
+		max:       d.Max,
+		total:     d.Total,
+		values:    map[int]int{},
+	}
+	if len(d.Values) > 0 {
+		a.values = make(map[int]int, len(d.Values))
+		for v, n := range d.Values {
+			a.values[v] = n
+		}
+	}
+	return a
+}
+
+func (d CountStatsDigest) IsZero() bool {
+	return d.Responses == 0 && len(d.Values) == 0
 }
 
 type timelineStatsAccumulator struct {
@@ -291,6 +425,39 @@ func (a *timelineStatsAccumulator) bucket(idx int) *latencyStats {
 	return st
 }
 
+func (a *timelineStatsAccumulator) Merge(other timelineStatsAccumulator) {
+	if other.anchor.IsZero() {
+		return
+	}
+	if a.anchor.IsZero() {
+		a.anchor = other.anchor
+		a.last = other.last
+		if len(other.buckets) > 0 {
+			a.buckets = map[int]*latencyStats{}
+			for idx, st := range other.buckets {
+				copied := &latencyStats{}
+				copied.Merge(*st)
+				a.buckets[idx] = copied
+			}
+		}
+		return
+	}
+	if other.anchor.Before(a.anchor) {
+		a.rebase(other.anchor)
+	}
+	if other.last.After(a.last) {
+		a.last = other.last
+	}
+	for idx, st := range other.buckets {
+		t := other.anchor.Add(time.Duration(idx) * timelineQuantum)
+		newIdx := int(t.Sub(a.anchor) / timelineQuantum)
+		if newIdx < 0 {
+			newIdx = 0
+		}
+		a.bucket(newIdx).Merge(*st)
+	}
+}
+
 func (a timelineStatsAccumulator) Buckets() []TimelineBucket {
 	if a.anchor.IsZero() {
 		return nil
@@ -334,8 +501,115 @@ func (a timelineStatsAccumulator) Buckets() []TimelineBucket {
 	return out
 }
 
+type TimelineDigest struct {
+	Anchor    time.Time           `json:"anchor"`
+	Last      time.Time           `json:"last"`
+	QuantumNs int64               `json:"quantum_ns"`
+	Buckets   map[int]StatsDigest `json:"buckets,omitempty"`
+}
+
+func timelineDigestFromAccumulator(a timelineStatsAccumulator) TimelineDigest {
+	d := TimelineDigest{Anchor: a.anchor, Last: a.last, QuantumNs: timelineQuantum.Nanoseconds()}
+	if len(a.buckets) > 0 {
+		d.Buckets = make(map[int]StatsDigest, len(a.buckets))
+		for idx, st := range a.buckets {
+			d.Buckets[idx] = statsDigestFromLatencyStats(*st)
+		}
+	}
+	return d
+}
+
+func (d TimelineDigest) accumulator() timelineStatsAccumulator {
+	a := timelineStatsAccumulator{anchor: d.Anchor, last: d.Last}
+	if len(d.Buckets) > 0 {
+		a.buckets = make(map[int]*latencyStats, len(d.Buckets))
+		for idx, st := range d.Buckets {
+			ls := st.latencyStats()
+			a.buckets[idx] = &ls
+		}
+	}
+	return a
+}
+
+func (d TimelineDigest) IsZero() bool {
+	return d.Anchor.IsZero() && len(d.Buckets) == 0
+}
+
 func formatSeconds(sec int) string {
 	return strconv.Itoa(sec) + "s"
+}
+
+// ReportDigests carries every mergeable population in a results JSON. Report
+// keeps the human-friendly Stats fields; Digests lets later commands merge
+// several reports without raw samples.
+type ReportDigests struct {
+	Overall       StatsDigest            `json:"overall"`
+	Response      *StatsDigest           `json:"response,omitempty"`
+	Conditioned   StatsDigest            `json:"conditioned"`
+	Unconditioned StatsDigest            `json:"unconditioned"`
+	Contextual    StatsDigest            `json:"contextual"`
+	NoContextual  StatsDigest            `json:"without_contextual"`
+	ByTarget      map[string]StatsDigest `json:"by_target,omitempty"`
+	ResultCounts  *CountStatsDigest      `json:"result_counts,omitempty"`
+	Timeline      *TimelineDigest        `json:"timeline,omitempty"`
+	WriteChurn    *StatsDigest           `json:"write_churn,omitempty"`
+}
+
+func reportDigestsFromLoadStats(st *loadStats, includeResponse bool) *ReportDigests {
+	if st == nil {
+		return nil
+	}
+	d := &ReportDigests{
+		Overall:       statsDigestFromLatencyStats(st.overall),
+		Conditioned:   statsDigestFromLatencyStats(st.conditioned),
+		Unconditioned: statsDigestFromLatencyStats(st.unconditioned),
+		Contextual:    statsDigestFromLatencyStats(st.contextual),
+		NoContextual:  statsDigestFromLatencyStats(st.noContextual),
+		ByTarget:      map[string]StatsDigest{},
+	}
+	if includeResponse {
+		resp := statsDigestFromLatencyStats(st.response)
+		d.Response = &resp
+	}
+	for target, ss := range st.byTarget {
+		d.ByTarget[target] = statsDigestFromLatencyStats(*ss)
+	}
+	counts := countStatsDigestFromAccumulator(st.resultCounts)
+	if !counts.IsZero() {
+		d.ResultCounts = &counts
+	}
+	timeline := timelineDigestFromAccumulator(st.timeline)
+	if !timeline.IsZero() {
+		d.Timeline = &timeline
+	}
+	return d
+}
+
+func (d *ReportDigests) loadStats() *loadStats {
+	st := newLoadStats()
+	if d == nil {
+		return st
+	}
+	st.overall = d.Overall.latencyStats()
+	st.totalSamples = st.overall.digest.count + st.overall.errors
+	if d.Response != nil {
+		st.response = d.Response.latencyStats()
+	}
+	st.conditioned = d.Conditioned.latencyStats()
+	st.unconditioned = d.Unconditioned.latencyStats()
+	st.contextual = d.Contextual.latencyStats()
+	st.noContextual = d.NoContextual.latencyStats()
+	for target, ss := range d.ByTarget {
+		ls := ss.latencyStats()
+		st.byTarget[target] = &ls
+	}
+	if d.ResultCounts != nil {
+		st.resultCounts = d.ResultCounts.accumulator()
+	}
+	if d.Timeline != nil {
+		st.timeline = d.Timeline.accumulator()
+	}
+	return st
 }
 
 type loadStats struct {
@@ -362,6 +636,30 @@ func loadStatsFromSamples(samples []Sample) *loadStats {
 		st.AddSample(s)
 	}
 	return st
+}
+
+func (s *loadStats) Merge(other *loadStats) {
+	if other == nil {
+		return
+	}
+	s.totalSamples += other.totalSamples
+	s.overall.Merge(other.overall)
+	s.response.Merge(other.response)
+	s.conditioned.Merge(other.conditioned)
+	s.unconditioned.Merge(other.unconditioned)
+	s.contextual.Merge(other.contextual)
+	s.noContextual.Merge(other.noContextual)
+	if s.byTarget == nil {
+		s.byTarget = map[string]*latencyStats{}
+	}
+	for target, ss := range other.byTarget {
+		if s.byTarget[target] == nil {
+			s.byTarget[target] = &latencyStats{}
+		}
+		s.byTarget[target].Merge(*ss)
+	}
+	s.resultCounts.Merge(other.resultCounts)
+	s.timeline.Merge(other.timeline)
 }
 
 func (s *loadStats) AddSample(sample Sample) {

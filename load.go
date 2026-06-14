@@ -65,7 +65,8 @@ type LoadResult struct {
 	WriteRate       int   // configured background churn writes/sec; 0 = none
 	WriteStats      Stats // latency of measured-phase churn writes/deletes
 
-	stats *loadStats
+	stats      *loadStats
+	writeStats latencyStats
 }
 
 // runChurn issues background tuple writes (and deletes of its own earlier
@@ -73,9 +74,9 @@ type LoadResult struct {
 // fresh nonce-scoped instance IDs. It returns latency stats from the measured
 // phase. A dedicated goroutine, not the check workers: write latency must not
 // occupy check-worker slots.
-func runChurn(client LoadClient, corpus *Corpus, cfg *Config, start, warmupEnd, deadline time.Time) Stats {
+func runChurn(client LoadClient, corpus *Corpus, cfg *Config, start, warmupEnd, deadline time.Time) latencyStats {
 	templates := corpus.ChurnTemplates
-	rng := rand.New(rand.NewSource(cfg.RandomSeed + 999983))
+	rng := rand.New(rand.NewSource(loadRunSeed(cfg) + 999983))
 	nonce := time.Now().UnixNano() % 1_000_000 // distinct IDs across runs against the same store
 	interval := time.Second / time.Duration(cfg.Load.WriteRate)
 	var stats latencyStats
@@ -85,7 +86,7 @@ func runChurn(client LoadClient, corpus *Corpus, cfg *Config, start, warmupEnd, 
 	for n := int64(0); ; n++ {
 		intended := start.Add(time.Duration(n) * interval)
 		if !intended.Before(deadline) {
-			return stats.Stats()
+			return stats
 		}
 		if d := time.Until(intended); d > 0 {
 			if timer == nil {
@@ -407,6 +408,12 @@ func newArrivalGen(arrival string, rate int, seed int64) *arrivalGen {
 	return g
 }
 
+const clientSeedStride int64 = 1_000_000_007
+
+func loadRunSeed(cfg *Config) int64 {
+	return cfg.RandomSeed + int64(cfg.Load.ClientID)*clientSeedStride
+}
+
 // next returns the offset of the next slot relative to the load start.
 func (g *arrivalGen) next() time.Duration {
 	if !g.poisson {
@@ -489,7 +496,7 @@ func RunLoad(client LoadClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 	var droppedSlots int64
 	if lc.Rate > 0 {
 		rateCh = make(chan time.Time, lc.Rate)
-		gen := newArrivalGen(lc.Arrival, lc.Rate, cfg.RandomSeed)
+		gen := newArrivalGen(lc.Arrival, lc.Rate, loadRunSeed(cfg))
 		go func() {
 			var timer *time.Timer
 			for {
@@ -526,7 +533,7 @@ func RunLoad(client LoadClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 		}()
 	}
 
-	var churnStats Stats
+	var churnStats latencyStats
 	churnDone := make(chan struct{})
 	if lc.WriteRate > 0 && len(corpus.ChurnTemplates) == 0 {
 		fmt.Fprintln(os.Stderr, "load: write_rate is set but the corpus has no churn templates (no relation accepts a plain unconditioned user type); churn disabled")
@@ -548,7 +555,7 @@ func RunLoad(client LoadClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 
 	worker := func(id int) {
 		defer wg.Done()
-		rng := rand.New(rand.NewSource(cfg.RandomSeed + int64(id)*7919))
+		rng := rand.New(rand.NewSource(loadRunSeed(cfg) + int64(id)*7919))
 		for time.Now().Before(deadline) {
 			var intended time.Time
 			if rateCh != nil {
@@ -653,9 +660,10 @@ func RunLoad(client LoadClient, corpus *Corpus, cfg *Config, scraper *MetricsScr
 	}
 	<-done
 	<-churnDone // before the after-snapshot so churn writes land inside the server-side diff
-	if churnStats.Count+churnStats.Errors > 0 {
+	if churnStats.digest.count+churnStats.errors > 0 {
 		res.WriteRate = lc.WriteRate
-		res.WriteStats = churnStats
+		res.WriteStats = churnStats.Stats()
+		res.writeStats = churnStats
 	}
 	if scraper != nil {
 		if after, err := scraper.Snapshot(); err != nil {

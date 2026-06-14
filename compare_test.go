@@ -10,6 +10,8 @@ import (
 )
 
 func sampleReport() *Report {
+	overallDigest := testStatsDigest(98, 2*time.Millisecond, 2, 8*time.Millisecond)
+	targetDigest := testStatsDigest(48, 2*time.Millisecond, 2, 8*time.Millisecond)
 	return &Report{
 		Endpoint:       "check",
 		Consistency:    "MINIMIZE_LATENCY",
@@ -22,11 +24,26 @@ func sampleReport() *Report {
 		ByTarget: map[string]Stats{
 			"document#viewer": {Count: 50, P50: 2 * time.Millisecond, P99: 8 * time.Millisecond},
 		},
+		Digests: &ReportDigests{
+			Overall:  overallDigest,
+			ByTarget: map[string]StatsDigest{"document#viewer": targetDigest},
+		},
 		ResolvedConfig: map[string]any{
 			"load":        map[string]any{"consistency": "MINIMIZE_LATENCY", "duration": "60s"},
 			"random_seed": 1,
 		},
 	}
+}
+
+func testStatsDigest(firstN int, first time.Duration, secondN int, second time.Duration) StatsDigest {
+	var st latencyStats
+	for i := 0; i < firstN; i++ {
+		st.AddSample(Sample{Items: 1}, first)
+	}
+	for i := 0; i < secondN; i++ {
+		st.AddSample(Sample{Items: 1}, second)
+	}
+	return statsDigestFromLatencyStats(st)
 }
 
 func TestDiffConfigsFindsNestedDifference(t *testing.T) {

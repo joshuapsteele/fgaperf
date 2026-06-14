@@ -59,14 +59,14 @@ var commandDocs = map[string]commandDoc{
 	"run": {
 		Summary: "replay corpus under load and write results",
 		Details: "Requires setup and probe. Replays corpus.json using the configured endpoint, concurrency, rate/sweep, warmup, duration, and consistency.",
-		Flags:   []string{"config", "duration", "warmup", "rate", "concurrency", "endpoint", "consistency", "output-dir"},
-		Example: "./fgaperf run -config examples/config.yaml -duration 30s\n./fgaperf run -config examples/config.yaml -rate 1000 -duration 1m",
+		Flags:   []string{"config", "duration", "warmup", "rate", "concurrency", "client-id", "endpoint", "consistency", "transport", "output-dir"},
+		Example: "./fgaperf run -config examples/config.yaml -duration 30s\n./fgaperf run -config examples/config.yaml -rate 1000 -duration 1m\n./fgaperf run -config examples/config.yaml -client-id 2 -output-dir results/client-2",
 		Gotcha:  "`load.rate` and `load.sweep.rates` are mutually exclusive.",
 	},
 	"all": {
 		Summary: "setup, probe, run, and cleanup in one command",
 		Details: "The usual one-shot workflow. Creates a fresh store, builds a corpus, runs load, writes results, and deletes the store unless -keep or keep_store is set.",
-		Flags:   []string{"config", "keep", "duration", "warmup", "rate", "concurrency", "endpoint", "consistency", "output-dir"},
+		Flags:   []string{"config", "keep", "duration", "warmup", "rate", "concurrency", "client-id", "endpoint", "consistency", "transport", "output-dir"},
 		Example: "./fgaperf all -config examples/config.yaml -warmup 2s -duration 8s",
 		Gotcha:  "Use -keep when you want to rerun probe/run against the same seeded store.",
 	},
@@ -82,6 +82,13 @@ var commandDocs = map[string]commandDoc{
 		Details: "Writes a Markdown comparison with overall/per-relation deltas, server-side deltas, config differences, and comparability caveats. With -against-baseline, compares one results JSON to a compact saved baseline and exits non-zero when any configured regression threshold is exceeded (the CI regression gate; pass -exit-on-regression=false for an advisory, non-blocking comparison).",
 		Flags:   []string{"config", "output-dir", "against-baseline", "max-regression", "exit-on-regression"},
 		Example: "./fgaperf compare -config examples/config.yaml results/results-A.json results/results-B.json\n./fgaperf compare -against-baseline results/baseline.json -max-regression p99=10%,throughput=-5% results/results-new.json",
+	},
+	"merge": {
+		Summary: "combine digest-enabled results from multiple load generators",
+		Details: "Reads two or more single-rate results JSON files produced against the same store and corpus, merges their latency digests, sums concurrency/offered/achieved throughput, and writes one combined results JSON plus findings Markdown. Use distinct load.client_id values (or -client-id) for each generator so their request RNG streams differ.",
+		Flags:   []string{"config", "output-dir"},
+		Example: "./fgaperf merge -output-dir results/merged results/client-*/results-*.json",
+		Gotcha:  "Merge currently supports single-rate reports; sweep reports should be compared separately.",
 	},
 	"baseline": {
 		Summary: "save a compact regression baseline from a results JSON",
@@ -135,6 +142,8 @@ func printCommandHelp(w io.Writer, cmd string, fs *flag.FlagSet) {
 		fmt.Fprintln(w, "  fgaperf compare -against-baseline <baseline.json> [flags] <results.json>")
 	} else if cmd == "baseline" {
 		fmt.Fprintln(w, "  fgaperf baseline [flags] save [save-flags] <results.json>")
+	} else if cmd == "merge" {
+		fmt.Fprintln(w, "  fgaperf merge [flags] <results-a.json> <results-b.json> [...]")
 	} else {
 		fmt.Fprintf(w, "  fgaperf %s [flags]\n", cmd)
 	}

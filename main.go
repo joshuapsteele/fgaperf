@@ -10,6 +10,7 @@ package main
 //	fgaperf plan  -config config.yaml   preview seeded tuple counts; no server
 //	fgaperf cleanup -config config.yaml delete the store recorded in the state file
 //	fgaperf compare a.json b.json       render two results files side by side
+//	fgaperf merge results-*.json        combine multi-client result digests
 //	fgaperf baseline save results.json  save compact regression baseline
 //	fgaperf gen-config -model model.json  emit a starter config.yaml on stdout
 
@@ -110,6 +111,7 @@ func main() {
 	warmupFlag := fs.Duration("warmup", 0, "override load.warmup")
 	rateFlag := fs.Int("rate", 0, "override load.rate (req/s; 0 = closed loop)")
 	concFlag := fs.Int("concurrency", 0, "override load.concurrency")
+	clientIDFlag := fs.Int("client-id", 0, "override load.client_id (distinct RNG stream for multi-client runs)")
 	endpointFlag := fs.String("endpoint", "", "override load.endpoint (check|batch-check|list-objects|list-users)")
 	consistencyFlag := fs.String("consistency", "", "override load.consistency (MINIMIZE_LATENCY|HIGHER_CONSISTENCY)")
 	transportFlag := fs.String("transport", "", "override load.transport (http|grpc)")
@@ -140,6 +142,8 @@ func main() {
 			ov.Rate = rateFlag
 		case "concurrency":
 			ov.Concurrency = concFlag
+		case "client-id":
+			ov.ClientID = clientIDFlag
 		case "endpoint":
 			ov.Endpoint = endpointFlag
 		case "consistency":
@@ -227,6 +231,12 @@ func main() {
 			fail("usage: fgaperf compare <results-a.json> <results-b.json>")
 		}
 		checkWithConfig(compare(args[0], args[1], cfg.OutputDir), cfg)
+	case "merge":
+		args := fs.Args()
+		if len(args) < 2 {
+			fail("usage: fgaperf merge [flags] <results-a.json> <results-b.json> [...]")
+		}
+		checkWithConfig(mergeReports(args, cfg.OutputDir), cfg)
 	default:
 		fail("unknown command %q", cmd)
 	}
@@ -483,8 +493,12 @@ func run(client *FGAClient, cfg *Config, st *State) error {
 	if err := validateStateCorpus(st, corpus); err != nil {
 		return err
 	}
-	fmt.Printf("load: endpoint=%s transport=%s concurrency=%d rate=%v warmup=%s duration=%s consistency=%s\n",
-		cfg.Load.Endpoint, cfg.Load.Transport, cfg.Load.Concurrency, cfg.Load.Rate, cfg.Load.Warmup, cfg.Load.Duration, cfg.Load.Consistency)
+	clientSuffix := ""
+	if cfg.Load.ClientID > 0 {
+		clientSuffix = fmt.Sprintf(" client_id=%d", cfg.Load.ClientID)
+	}
+	fmt.Printf("load: endpoint=%s transport=%s concurrency=%d%s rate=%v warmup=%s duration=%s consistency=%s\n",
+		cfg.Load.Endpoint, cfg.Load.Transport, cfg.Load.Concurrency, clientSuffix, cfg.Load.Rate, cfg.Load.Warmup, cfg.Load.Duration, cfg.Load.Consistency)
 	// The measured phase runs over the configured transport; setup and probe
 	// already ran over HTTP on `client`. For gRPC we open a dedicated connection
 	// here and close it when the run finishes.

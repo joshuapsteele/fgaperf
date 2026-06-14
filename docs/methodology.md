@@ -159,6 +159,24 @@ you actually care about, and report client placement, datastore engine, and
 cache configuration alongside the latencies. A local Docker stack is excellent
 for relative comparisons and smoke tests, and misleading as an absolute number.
 
+## Distributed load generators
+
+A single load-generator host can become the bottleneck before a large OpenFGA
+cluster does. In that case, run `setup` and `probe` once, share the resulting
+state and corpus with several generator hosts, and run `fgaperf run` on each
+host with a unique `load.client_id` (or `-client-id`). The client ID offsets the
+request-selection, poisson-arrival, and churn RNG streams, so every process can
+use the same corpus without issuing the same pseudo-random sequence.
+
+`fgaperf merge results-*.json` combines those client-side results offline. It
+sums throughput, offered/achieved rate, concurrency, errors, and mismatches, and
+merges the latency distributions from the digest sketches embedded in the JSON.
+It does not merge server-side Prometheus sections: several clients scraping the
+same OpenFGA deployment would observe the same global counters, so summing those
+sections would double-count. Use the merged client-side report for caller
+experience, and inspect server metrics separately from one isolated scrape or
+your monitoring system.
+
 ## Change one variable per run
 
 The tool's natural use is comparative: consistency on vs off, cache on vs off,
