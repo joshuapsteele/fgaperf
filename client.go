@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 type FGAClient struct {
@@ -229,11 +230,24 @@ func (c *FGAClient) do(method, path string, body any, out any) error {
 	return nil
 }
 
+// truncate caps s at n bytes, backing off to the nearest rune boundary so the
+// tail it appends to (e.g. an ErrorSamples entry) never carries a partial
+// multi-byte sequence.
 func truncate(s string, n int) string {
-	if len(s) > n {
-		return s[:n] + "..."
+	if len(s) <= n {
+		return s
 	}
-	return s
+	cut := s[:n]
+	// If the cut landed mid-rune, drop the trailing partial bytes. A size-1
+	// RuneError is an invalid/incomplete sequence; a real U+FFFD decodes to
+	// RuneError with size 3, so guard on the size to leave valid runes intact.
+	for len(cut) > 0 {
+		if r, size := utf8.DecodeLastRuneInString(cut); r != utf8.RuneError || size > 1 {
+			break
+		}
+		cut = cut[:len(cut)-1]
+	}
+	return cut + "..."
 }
 
 func (c *FGAClient) CreateStore(name string) (string, error) {

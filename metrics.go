@@ -157,6 +157,15 @@ func parseLE(labels string) (float64, error) {
 
 // diff returns after - before, clamped at zero (counter resets mid-run would
 // otherwise produce negative garbage).
+//
+// Caveat: a server restart resets these counters, so a clamped diff across a
+// restart is meaningless — and because the clamp is applied per bucket, an
+// uneven reset can also leave the bucket cumulative counts non-monotonic
+// (a higher-le bucket below a lower-le one). We do not detect this here:
+// a restart mid-run invalidates the whole measured phase, not just the
+// server-side view, so the operator should re-run rather than trust either
+// the client- or server-side numbers. The clamp's only job is to keep a
+// transient scrape glitch from emitting negative buckets.
 func (s *snapshot) diff(before *snapshot) *snapshot {
 	out := &snapshot{Histograms: map[string]*histogram{}, Counters: map[string]float64{}}
 	for fam, after := range s.Histograms {

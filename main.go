@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/signal"
 	"sort"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -255,17 +256,22 @@ func runAll(client *FGAClient, a *Analysis, cfg *Config, keep bool) error {
 		return err
 	}
 	if !keep {
+		// A SIGINT landing during the normal-exit defer would otherwise let both
+		// paths call DeleteStore; sync.Once collapses them to one deletion (and
+		// keeps the signal handler from racing the defer to os.Exit).
+		var once sync.Once
+		delOnce := func() { once.Do(func() { deleteStore(client, cfg, st) }) }
 		sigs := make(chan os.Signal, 1)
 		signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
 		go func() {
 			<-sigs
 			fmt.Fprintln(os.Stderr, "\ninterrupted, deleting store...")
-			deleteStore(client, cfg, st)
+			delOnce()
 			os.Exit(1)
 		}()
 		defer func() {
 			signal.Stop(sigs)
-			deleteStore(client, cfg, st)
+			delOnce()
 		}()
 	}
 	if err := probe(client, a, cfg, st); err != nil {

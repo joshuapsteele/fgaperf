@@ -518,7 +518,28 @@ Acceptance: a mixed-endpoint config exercises all selected endpoints at the
 configured shares and reports per-endpoint percentiles; single-endpoint behavior
 is unchanged.
 
-### 13. Review cleanups (small, independent)
+### 13. Review cleanups (small, independent) ✅
+
+Status: **Complete** (2026-06-14) — landed C1, C2, and C4 (C3 was already
+subsumed by item 1's streaming digests). C1: `truncate` (`client.go`) now backs
+off to the nearest rune boundary via `utf8.DecodeLastRuneInString` (guarding on
+size so a real U+FFFD survives), so a clipped error body can never push a
+partial multi-byte sequence into `ErrorSamples`. C2: `runAll` (`main.go`) wraps
+the store deletion in a `sync.Once` shared by the SIGINT handler and the
+normal-exit defer, so a signal landing during cleanup deletes the store exactly
+once instead of double-calling `DeleteStore` and racing `os.Exit(1)`. C4: the
+`snapshot.diff` clamp (`metrics.go`) gained a comment documenting that a
+mid-run counter reset (server restart) invalidates the whole measured phase —
+the per-bucket `max(0, …)` can leave bucket counts non-monotonic — and that the
+clamp's only job is to absorb a transient scrape glitch, not to paper over a
+restart. No user-facing behavior, flags, config, or report output changed, so no
+README/docs updates were needed. Verification: `go vet ./...`;
+`go test -race -count=1 ./...` (new `TestTruncateNeverEmitsPartialRune`:
+every byte-length cut of a multi-byte string stays valid UTF-8, short strings
+pass through, a rune ending exactly at the cut is preserved); end-to-end against
+the local compose stack — `all` completed and deleted its store once, and a
+SIGINT during the load phase deleted the store exactly once (no double-delete
+warning, exit 1).
 
 Carried over from the post-audit review — none are correctness bugs, all are
 low-risk hygiene.

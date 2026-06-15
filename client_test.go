@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func testClient(handler http.HandlerFunc) (*FGAClient, *httptest.Server) {
@@ -79,6 +80,29 @@ func TestErrorResponsesAreSurfacedTruncated(t *testing.T) {
 	}
 	if len(err.Error()) > 400 {
 		t.Errorf("error not truncated: %d chars", len(err.Error()))
+	}
+}
+
+func TestTruncateNeverEmitsPartialRune(t *testing.T) {
+	// "héllo" repeated: 'é' is the 2-byte sequence 0xC3 0xA9, so most byte
+	// boundaries land mid-rune. Cutting at every length must yield valid UTF-8.
+	s := strings.Repeat("héllo wörld ", 30)
+	for n := 0; n <= len(s); n++ {
+		got := truncate(s, n)
+		if !utf8.ValidString(got) {
+			t.Fatalf("truncate(s, %d) = %q is not valid UTF-8", n, got)
+		}
+	}
+
+	// Short strings pass through untouched (no ellipsis).
+	if got := truncate("héllo", 100); got != "héllo" {
+		t.Errorf("truncate of short string = %q, want %q", got, "héllo")
+	}
+
+	// A valid multi-byte rune ending exactly at the cut is preserved, not
+	// stripped ("aébc" is 5 bytes: a, é(2), b, c; cutting at 3 ends on 'é').
+	if got := truncate("aébc", 3); got != "aé..." {
+		t.Errorf("truncate(\"aébc\", 3) = %q, want %q", got, "aé...")
 	}
 }
 
