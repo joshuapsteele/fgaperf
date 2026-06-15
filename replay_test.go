@@ -103,6 +103,24 @@ not json at all
 	}
 }
 
+func TestParseReplayLogSkipsOversizedLineAndContinues(t *testing.T) {
+	oversized := strings.Repeat("x", maxReplayLineBytes+1)
+	log := oversized + "\n" + `{"user":"user:1","relation":"viewer","object":"document:1"}`
+	parsed, err := parseReplayLog(strings.NewReader(log), nil)
+	if err != nil {
+		t.Fatalf("oversized replay line should be skipped, not fatal: %v", err)
+	}
+	if parsed.skipped != 1 {
+		t.Errorf("skipped = %d, want 1 oversized line", parsed.skipped)
+	}
+	if parsed.total != 1 || len(parsed.distinct) != 1 {
+		t.Fatalf("valid line after oversized line was not parsed: total=%d distinct=%d", parsed.total, len(parsed.distinct))
+	}
+	if len(parsed.errSamples) == 0 || !strings.Contains(parsed.errSamples[0], "exceeds") {
+		t.Errorf("oversized skip reason not retained: %v", parsed.errSamples)
+	}
+}
+
 func TestParseReplayLogIgnoresUnknownFields(t *testing.T) {
 	// A raw OpenFGA request log carries far more than the four fields we read;
 	// the extras must be ignored, not rejected.

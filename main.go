@@ -261,7 +261,7 @@ func main() {
 // repeated runs against a deployed OpenFGA leave nothing behind. The store is
 // also deleted when a phase fails or the process is interrupted.
 func runAll(client *FGAClient, a *Analysis, cfg *Config, keep bool) error {
-	st, err := setup(client, a, cfg, false)
+	st, err := setupStore(client, a, cfg, false, true)
 	if err != nil {
 		return err
 	}
@@ -270,7 +270,13 @@ func runAll(client *FGAClient, a *Analysis, cfg *Config, keep bool) error {
 		// paths call DeleteStore; sync.Once collapses them to one deletion (and
 		// keeps the signal handler from racing the defer to os.Exit).
 		var once sync.Once
-		delOnce := func() { once.Do(func() { deleteStore(client, cfg, st) }) }
+		delOnce := func() {
+			once.Do(func() {
+				if err := deleteStore(client, cfg, st); err != nil {
+					warnDeleteStoreFailed(st.StoreID, err)
+				}
+			})
+		}
 		sigs := make(chan os.Signal, 1)
 		signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
 		go func() {
@@ -290,15 +296,19 @@ func runAll(client *FGAClient, a *Analysis, cfg *Config, keep bool) error {
 	return run(client, cfg, st)
 }
 
-// deleteStore removes the store and the state file pointing at it. Failure is
-// reported but not fatal: the test results are already on disk.
-func deleteStore(client *FGAClient, cfg *Config, st *State) {
+// deleteStore removes the store and the state file pointing at it. Callers
+// decide whether a deletion failure is fatal for their workflow.
+func deleteStore(client *FGAClient, cfg *Config, st *State) error {
 	if err := client.DeleteStore(st.StoreID); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: deleting store %s failed: %v\nrun `fgaperf cleanup` to retry\n", st.StoreID, err)
-		return
+		return err
 	}
 	os.Remove(cfg.StateFile)
 	fmt.Printf("store deleted: %s\n", st.StoreID)
+	return nil
+}
+
+func warnDeleteStoreFailed(storeID string, err error) {
+	fmt.Fprintf(os.Stderr, "warning: deleting store %s failed: %v\nrun `fgaperf cleanup` to retry\n", storeID, err)
 }
 
 func cleanup(client *FGAClient, cfg *Config, allStores bool) error {
@@ -311,7 +321,9 @@ func cleanup(client *FGAClient, cfg *Config, allStores bool) error {
 		if err := json.Unmarshal(data, &st); err != nil {
 			return err
 		}
-		deleteStore(client, cfg, &st)
+		if err := deleteStore(client, cfg, &st); err != nil {
+			return fmt.Errorf("deleting store %s: %w", st.StoreID, err)
+		}
 		return nil
 	}
 	stores, err := client.ListStores()
@@ -385,12 +397,26 @@ func inspect(a *Analysis, cfg *Config) {
 }
 
 func setup(client *FGAClient, a *Analysis, cfg *Config, resume bool) (*State, error) {
+	return setupStore(client, a, cfg, resume, false)
+}
+
+func setupStore(client *FGAClient, a *Analysis, cfg *Config, resume bool, cleanupOnFailure bool) (ret *State, retErr error) {
 	// Generate first: deterministic, and resume needs the same tuple order to
 	// know the prefix it already wrote is still the prefix it would write now.
 	world := NewWorld(a, cfg)
 	tuples := world.GenerateTuples()
 
 	var st *State
+	createdStore := false
+	preserveCreatedStore := false
+	defer func() {
+		if retErr == nil || !createdStore || preserveCreatedStore || st == nil || st.StoreID == "" {
+			return
+		}
+		if err := deleteStore(client, cfg, st); err != nil {
+			warnDeleteStoreFailed(st.StoreID, err)
+		}
+	}()
 	startIndex := 0
 	resuming := false
 	if resume {
@@ -417,13 +443,17 @@ func setup(client *FGAClient, a *Analysis, cfg *Config, resume bool) (*State, er
 			return nil, fmt.Errorf("creating store: %w", err)
 		}
 		fmt.Printf("store created: %s\n", storeID)
+		createdStore = true
+		st = &State{StoreID: storeID}
 		modelID, err := client.WriteModel(storeID, a.RawModel)
 		if err != nil {
 			return nil, fmt.Errorf("writing model: %w", err)
 		}
 		fmt.Printf("model written: %s\n", modelID)
 		fmt.Printf("generated %d tuples across %d cohorts\n", len(tuples), cfg.Seed.Cohorts)
-		st = &State{StoreID: storeID, ModelID: modelID, TupleCount: len(tuples), BatchSize: cfg.Seed.BatchSize}
+		st.ModelID = modelID
+		st.TupleCount = len(tuples)
+		st.BatchSize = cfg.Seed.BatchSize
 		// Persist a partial state up front so an interrupted seed is resumable.
 		if err := saveState(cfg, st); err != nil {
 			return nil, err
@@ -436,7 +466,12 @@ func setup(client *FGAClient, a *Analysis, cfg *Config, resume bool) (*State, er
 	}
 	dur, err := SeedStore(client, st.StoreID, st.ModelID, tuples, cfg, startIndex, resuming, checkpoint)
 	if err != nil {
-		saveState(cfg, st) // persist the last clean prefix so `setup -resume` can continue
+		// Persist the last clean prefix so standalone `setup -resume` can
+		// continue. `all` opts into cleanupOnFailure because it owns cleanup for
+		// the whole workflow and cannot resume midway.
+		if saveState(cfg, st) == nil && !cleanupOnFailure {
+			preserveCreatedStore = true
+		}
 		return nil, fmt.Errorf("seeding: %w (resume with `fgaperf setup -resume`)", err)
 	}
 	seeded := len(tuples) - startIndex

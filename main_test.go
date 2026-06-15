@@ -95,6 +95,78 @@ func TestProbeAndRunRejectIncompleteSeedState(t *testing.T) {
 	}
 }
 
+func TestSetupDeletesNewStoreWhenWriteModelFails(t *testing.T) {
+	a := loadExampleModel(t)
+	var deletes atomic.Int32
+	client, srv := testClient(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/stores":
+			json.NewEncoder(w).Encode(map[string]string{"id": "store-1"})
+		case r.Method == http.MethodPost && r.URL.Path == "/stores/store-1/authorization-models":
+			http.Error(w, "model rejected", http.StatusInternalServerError)
+		case r.Method == http.MethodDelete && r.URL.Path == "/stores/store-1":
+			deletes.Add(1)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			http.Error(w, "unexpected", http.StatusBadRequest)
+		}
+	})
+	defer srv.Close()
+
+	cfg, err := LoadConfigFile("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.StateFile = filepath.Join(t.TempDir(), "state.json")
+	_, err = setup(client, a, cfg, false)
+	if err == nil {
+		t.Fatal("setup succeeded even though WriteModel failed")
+	}
+	if !strings.Contains(err.Error(), "writing model") {
+		t.Fatalf("setup error did not name model write failure: %v", err)
+	}
+	if got := deletes.Load(); got != 1 {
+		t.Fatalf("setup deleted store %d times after WriteModel failure, want 1", got)
+	}
+}
+
+func TestCleanupReturnsErrorWhenDeleteStoreFails(t *testing.T) {
+	client, srv := testClient(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.URL.Path != "/stores/store-1" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			http.Error(w, "unexpected", http.StatusBadRequest)
+			return
+		}
+		http.Error(w, "delete failed", http.StatusInternalServerError)
+	})
+	defer srv.Close()
+
+	cfg, err := LoadConfigFile("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.StateFile = filepath.Join(t.TempDir(), "state.json")
+	data, err := json.Marshal(State{StoreID: "store-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.StateFile, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err = cleanup(client, cfg, false)
+	if err == nil {
+		t.Fatal("cleanup returned nil even though DeleteStore failed")
+	}
+	if !strings.Contains(err.Error(), "deleting store store-1") {
+		t.Fatalf("cleanup error did not name failed store deletion: %v", err)
+	}
+	if _, statErr := os.Stat(cfg.StateFile); statErr != nil {
+		t.Fatalf("state file should remain when delete fails so cleanup can be retried: %v", statErr)
+	}
+}
+
 func TestCLIHelperMain(t *testing.T) {
 	if os.Getenv("FGAPERF_TEST_MAIN") != "1" {
 		return

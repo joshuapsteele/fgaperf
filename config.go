@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/rand"
 	"os"
 	"sort"
@@ -211,6 +212,9 @@ func (m *EndpointMix) UnmarshalYAML(node *yaml.Node) error {
 		m.scalar = true
 		return nil
 	case yaml.MappingNode:
+		if len(node.Content) == 0 {
+			return fmt.Errorf("load.endpoint must name at least one endpoint")
+		}
 		seen := map[string]bool{}
 		var weights []EndpointWeight
 		for i := 0; i+1 < len(node.Content); i += 2 {
@@ -445,12 +449,27 @@ func (c *Config) validate() error {
 	if len(c.Load.Endpoint.Weights) == 0 {
 		return fmt.Errorf("load.endpoint must name at least one endpoint")
 	}
+	finite := func(name string, v float64) error {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return fmt.Errorf("%s must be finite, got %v", name, v)
+		}
+		return nil
+	}
+	positiveFloat := func(name string, v float64) error {
+		if err := finite(name, v); err != nil {
+			return err
+		}
+		if v <= 0 {
+			return fmt.Errorf("%s must be positive, got %v", name, v)
+		}
+		return nil
+	}
 	for _, ew := range c.Load.Endpoint.Weights {
 		if !validEndpoints[ew.Endpoint] {
 			return fmt.Errorf("load.endpoint must be check, batch-check, list-objects, or list-users, got %q", ew.Endpoint)
 		}
-		if ew.Weight <= 0 {
-			return fmt.Errorf("load.endpoint weight for %q must be positive, got %v", ew.Endpoint, ew.Weight)
+		if err := positiveFloat(fmt.Sprintf("load.endpoint weight for %q", ew.Endpoint), ew.Weight); err != nil {
+			return err
 		}
 	}
 	switch c.Load.Arrival {
@@ -472,6 +491,9 @@ func (c *Config) validate() error {
 		return fmt.Errorf("corpus_source: replay requires replay.file (a JSONL check log to replay)")
 	}
 	prob := func(name string, v float64) error {
+		if err := finite(name, v); err != nil {
+			return err
+		}
 		if v < 0 || v > 1 {
 			return fmt.Errorf("%s must be between 0 and 1, got %v", name, v)
 		}
@@ -483,8 +505,14 @@ func (c *Config) validate() error {
 	if err := prob("probe.cohort_bias", c.Probe.CohortBias); err != nil {
 		return err
 	}
+	if err := finite("probe.allowed_ratio", c.Probe.AllowedRatio); err != nil {
+		return err
+	}
 	if c.Probe.AllowedRatio > 1 {
 		return fmt.Errorf("probe.allowed_ratio must be between 0 and 1 (or negative for the natural mix), got %v", c.Probe.AllowedRatio)
+	}
+	if err := finite("probe.max_duplication", c.Probe.MaxDuplication); err != nil {
+		return err
 	}
 	if c.Probe.AttributeDS && c.Metrics.PrometheusURL == "" {
 		return fmt.Errorf("probe.attribute_ds_queries requires metrics.prometheus_url (the per-relation datastore-query attribution pass reads OpenFGA's metrics endpoint)")
@@ -517,8 +545,8 @@ func (c *Config) validate() error {
 		if !isTypeRelation(t.Relation) {
 			return fmt.Errorf("probe.targets entry %q must be of the form type#relation", t.Relation)
 		}
-		if t.Weight <= 0 {
-			return fmt.Errorf("probe.targets weight for %q must be positive, got %v", t.Relation, t.Weight)
+		if err := positiveFloat(fmt.Sprintf("probe.targets weight for %q", t.Relation), t.Weight); err != nil {
+			return err
 		}
 	}
 	for cond, cc := range c.Conditions {
@@ -548,10 +576,14 @@ func (c *Config) validate() error {
 						return fmt.Errorf("%s.values must all be positive, got %d", name, v)
 					}
 					if len(d.Weights) > 0 {
-						if d.Weights[i] < 0 {
-							return fmt.Errorf("%s.weights must all be >= 0, got %v", name, d.Weights[i])
+						w := d.Weights[i]
+						if err := finite(fmt.Sprintf("%s.weights[%d]", name, i), w); err != nil {
+							return err
 						}
-						total += d.Weights[i]
+						if w < 0 {
+							return fmt.Errorf("%s.weights must all be >= 0, got %v", name, w)
+						}
+						total += w
 					}
 				}
 				if len(d.Weights) > 0 && total <= 0 {

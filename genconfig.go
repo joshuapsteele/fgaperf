@@ -31,6 +31,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 var contextualNameRE = regexp.MustCompile(`(?i)(context|session|active|current)`)
@@ -122,7 +124,15 @@ random_seed: 42
 # seeded data.
 # keep_store: true
 
-`, modelPath)
+`, yamlScalar(modelPath))
+}
+
+func yamlScalar(value string) string {
+	data, err := yaml.Marshal(value)
+	if err != nil {
+		return fmt.Sprintf("%q", value)
+	}
+	return strings.TrimSpace(string(data))
 }
 
 func writeSeed(b *strings.Builder, a *Analysis, instances map[string]int, fanout map[string]int, hasWildcards bool, contextualRels []string) {
@@ -281,7 +291,9 @@ conditions:
 		c := a.Model.Conditions[n]
 		tupleSide, requestSide := splitConditionParams(c)
 		fmt.Fprintf(b, "  %s:\n", n)
-		fmt.Fprintf(b, "    # %s\n", strings.TrimSpace(c.Expression))
+		for _, line := range strings.Split(strings.TrimSpace(c.Expression), "\n") {
+			fmt.Fprintf(b, "    # %s\n", line)
+		}
 		if len(tupleSide) > 0 {
 			b.WriteString("    # Which parameters are bound on the TUPLE (vs sent on the request).\n")
 			b.WriteString("    # Maps and lists usually live on tuples; scalars usually live on the request.\n")

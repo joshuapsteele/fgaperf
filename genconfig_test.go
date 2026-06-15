@@ -164,3 +164,61 @@ func TestGenerateConfigEchoesModelPath(t *testing.T) {
 		t.Errorf("model_file path not echoed verbatim:\n%s", buf.String())
 	}
 }
+
+func TestGenerateConfigModelPathRoundTripsSpecialYAMLScalars(t *testing.T) {
+	a, err := LoadModel("examples/model.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, modelPath := range []string{
+		"models/my model #1.json",
+		"models/path: with colon.json",
+		`models/[draft] "one".json`,
+	} {
+		var buf bytes.Buffer
+		if err := generateConfig(modelPath, a, &buf); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := LoadConfigFile(path)
+		if err != nil {
+			t.Fatalf("generated config for %q failed to parse: %v\n---\n%s", modelPath, err, buf.String())
+		}
+		if cfg.ModelFile != modelPath {
+			t.Errorf("model_file round-tripped as %q, want %q\n---\n%s", cfg.ModelFile, modelPath, buf.String())
+		}
+	}
+}
+
+func TestGenerateConfigCommentsEveryConditionExpressionLine(t *testing.T) {
+	a, err := LoadModel("examples/model.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cond := a.Model.Conditions["has_scope"]
+	cond.Expression = "required_scope in granted_scopes\n&& true"
+	a.Model.Conditions["has_scope"] = cond
+
+	var buf bytes.Buffer
+	if err := generateConfig("examples/model.json", a, &buf); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "\n&& true") {
+		t.Fatalf("multiline condition expression emitted an uncommented line:\n%s", out)
+	}
+	if !strings.Contains(out, "    # && true") {
+		t.Fatalf("second condition expression line was not commented:\n%s", out)
+	}
+
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(out), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfigFile(path); err != nil {
+		t.Fatalf("generated config with multiline condition expression failed to parse: %v\n---\n%s", err, out)
+	}
+}

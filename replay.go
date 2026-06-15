@@ -65,8 +65,7 @@ const maxReplayLineBytes = 16 << 20 // 16 MiB
 func parseReplayLog(r io.Reader, conditioned map[string]bool) (*replayLog, error) {
 	log := &replayLog{weights: map[string]float64{}}
 	distinctIdx := map[string]int{}
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), maxReplayLineBytes)
+	br := bufio.NewReader(r)
 	lineNo := 0
 	skip := func(reason string) {
 		log.skipped++
@@ -74,24 +73,51 @@ func parseReplayLog(r io.Reader, conditioned map[string]bool) (*replayLog, error
 			log.errSamples = append(log.errSamples, fmt.Sprintf("line %d: %s", lineNo, reason))
 		}
 	}
-	for sc.Scan() {
+	for {
+		line, tooLong, err := readReplayLine(br, maxReplayLineBytes)
+		if err == io.EOF && len(line) == 0 && !tooLong {
+			break
+		}
+		if err != nil && err != io.EOF {
+			return nil, fmt.Errorf("reading replay log: %w", err)
+		}
+		atEOF := err == io.EOF
 		lineNo++
-		raw := bytes.TrimSpace(sc.Bytes())
+		if tooLong {
+			skip(fmt.Sprintf("line exceeds %d bytes", maxReplayLineBytes))
+			if atEOF {
+				break
+			}
+			continue
+		}
+		raw := bytes.TrimSpace(line)
 		if len(raw) == 0 {
+			if atEOF {
+				break
+			}
 			continue // blank lines are not errors
 		}
 		var ln replayLine
 		if err := json.Unmarshal(raw, &ln); err != nil {
 			skip("malformed JSON: " + err.Error())
+			if atEOF {
+				break
+			}
 			continue
 		}
 		if ln.User == "" || ln.Relation == "" || ln.Object == "" {
 			skip("missing required user/relation/object")
+			if atEOF {
+				break
+			}
 			continue
 		}
 		objType := typeOfObject(ln.Object)
 		if objType == "" {
 			skip(fmt.Sprintf("object %q has no type prefix (want type:id)", ln.Object))
+			if atEOF {
+				break
+			}
 			continue
 		}
 		target := objType + "#" + ln.Relation
@@ -113,11 +139,54 @@ func parseReplayLog(r io.Reader, conditioned map[string]bool) (*replayLog, error
 		}
 		distinctIdx[key] = len(log.distinct)
 		log.distinct = append(log.distinct, e)
-	}
-	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("reading replay log: %w", err)
+		if atEOF {
+			break
+		}
 	}
 	return log, nil
+}
+
+func readReplayLine(r *bufio.Reader, maxBytes int) ([]byte, bool, error) {
+	var line []byte
+	contentLen := 0
+	tooLong := false
+	for {
+		chunk, err := r.ReadSlice('\n')
+		if len(chunk) > 0 {
+			contentLen += replayLineContentLen(chunk)
+			if contentLen > maxBytes {
+				tooLong = true
+				line = nil
+			}
+			if !tooLong {
+				line = append(line, chunk...)
+			}
+		}
+		switch err {
+		case nil:
+			return line, tooLong, nil
+		case bufio.ErrBufferFull:
+			continue
+		case io.EOF:
+			if len(chunk) == 0 {
+				return nil, false, io.EOF
+			}
+			return line, tooLong, io.EOF
+		default:
+			return nil, false, err
+		}
+	}
+}
+
+func replayLineContentLen(chunk []byte) int {
+	n := len(chunk)
+	if n > 0 && chunk[n-1] == '\n' {
+		n--
+		if n > 0 && chunk[n-1] == '\r' {
+			n--
+		}
+	}
+	return n
 }
 
 // BuildReplayCorpus reads cfg.Replay.File, learns ground truth for each
