@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -65,6 +66,32 @@ func TestValidateResumeStateBatchSize(t *testing.T) {
 	// A tuple-count mismatch is still caught even when the batch size matches.
 	if err := validateResumeState(base, 99, 100); err == nil {
 		t.Fatal("changed tuple count must be rejected")
+	}
+}
+
+func TestProbeAndRunRejectIncompleteSeedState(t *testing.T) {
+	cfg, err := LoadConfigFile("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &State{StoreID: "store-1", ModelID: "model-1", TupleCount: 100, SeededTuples: 10, SeedComplete: false}
+	for name, err := range map[string]error{
+		"probe": probe(nil, nil, cfg, st),
+		"run":   run(nil, cfg, st),
+	} {
+		if err == nil {
+			t.Fatalf("%s accepted incomplete seed state", name)
+		}
+		msg := err.Error()
+		if !strings.Contains(msg, "incomplete seed") || !strings.Contains(msg, "setup -resume") {
+			t.Fatalf("%s returned non-actionable error: %v", name, err)
+		}
+	}
+
+	st.SeededTuples = 100
+	st.SeedComplete = true
+	if err := validateReadyState(st); err != nil {
+		t.Fatalf("complete seed state rejected: %v", err)
 	}
 }
 

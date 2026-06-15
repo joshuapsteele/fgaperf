@@ -611,8 +611,14 @@ func (c *Config) validate() error {
 	if c.Load.Rate < 0 {
 		return fmt.Errorf("load.rate must be >= 0 (0 = closed loop), got %d", c.Load.Rate)
 	}
+	if c.Load.Rate > 0 && time.Second/time.Duration(c.Load.Rate) <= 0 {
+		return fmt.Errorf("load.rate is too high to schedule with nanosecond resolution, got %d", c.Load.Rate)
+	}
 	if c.Load.WriteRate < 0 {
 		return fmt.Errorf("load.write_rate must be >= 0, got %d", c.Load.WriteRate)
+	}
+	if c.Load.WriteRate > 0 && time.Second/time.Duration(c.Load.WriteRate) <= 0 {
+		return fmt.Errorf("load.write_rate is too high to schedule with nanosecond resolution, got %d", c.Load.WriteRate)
 	}
 	if c.Load.ClientID < 0 {
 		return fmt.Errorf("load.client_id must be >= 0, got %d", c.Load.ClientID)
@@ -635,6 +641,9 @@ func (c *Config) validate() error {
 	for _, r := range c.Load.Sweep.Rates {
 		if r <= 0 {
 			return fmt.Errorf("load.sweep.rates must all be positive, got %d", r)
+		}
+		if time.Second/time.Duration(r) <= 0 {
+			return fmt.Errorf("load.sweep.rates is too high to schedule with nanosecond resolution, got %d", r)
 		}
 	}
 	if len(c.Load.Sweep.Rates) > 0 && c.Load.Rate > 0 {

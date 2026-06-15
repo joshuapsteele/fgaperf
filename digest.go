@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math"
 	"sort"
 	"strconv"
 	"time"
@@ -94,7 +95,7 @@ func (d latencyDigest) Quantile(q float64) time.Duration {
 	if q >= 1 {
 		return d.max
 	}
-	rank := int(q * float64(d.count))
+	rank := int(math.Ceil(q * float64(d.count)))
 	if rank < 1 {
 		rank = 1
 	}
@@ -303,7 +304,7 @@ func (a *countStatsAccumulator) Stats() *CountStats {
 }
 
 func (a *countStatsAccumulator) quantile(q float64) int {
-	rank := int(q * float64(a.responses))
+	rank := int(math.Ceil(q * float64(a.responses)))
 	if rank < 1 {
 		rank = 1
 	}

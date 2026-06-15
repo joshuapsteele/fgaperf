@@ -106,6 +106,23 @@ func TestMergeRejectsIncompatibleReports(t *testing.T) {
 	}
 }
 
+func TestMergeRejectsDifferentResolvedWorkloadConfig(t *testing.T) {
+	dir := t.TempDir()
+	start := time.Now()
+	a := mergeFixtureReport(1, 1, 0, 10, start, []time.Duration{time.Millisecond})
+	b := mergeFixtureReport(2, 1, 0, 10, start, []time.Duration{time.Millisecond})
+	a.ResolvedConfig["model_file"] = "model-a.json"
+	b.ResolvedConfig["model_file"] = "model-b.json"
+	pathA := writeReportFixture(t, dir, "a.json", a)
+	pathB := writeReportFixture(t, dir, "b.json", b)
+
+	if _, err := buildMergedReport([]string{pathA, pathB}, start); err == nil {
+		t.Fatal("reports with different resolved workload configs merged without error")
+	} else if !strings.Contains(err.Error(), "resolved workload config differs") || !strings.Contains(err.Error(), "model_file") {
+		t.Fatalf("error did not name the resolved config difference: %v", err)
+	}
+}
+
 // Two mixed-endpoint reports with the same blend merge into one whose
 // per-endpoint counts are the sum of the inputs; two different blends are
 // rejected.

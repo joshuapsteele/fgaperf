@@ -48,6 +48,25 @@ func TestLatencyDigestMatchesExactWithinTolerance(t *testing.T) {
 	}
 }
 
+func TestLatencyDigestNearestRankUsesTailForSmallPopulations(t *testing.T) {
+	var d latencyDigest
+	d.Add(time.Millisecond)
+	d.Add(time.Second)
+	if got := d.Stats().P99; got != time.Second {
+		t.Fatalf("p99 = %v, want tail sample %v", got, time.Second)
+	}
+}
+
+func TestCountStatsNearestRankUsesTailForSmallPopulations(t *testing.T) {
+	var a countStatsAccumulator
+	a.Add(1)
+	a.Add(1000)
+	got := a.Stats()
+	if got.P99 != 1000 {
+		t.Fatalf("count p99 = %d, want tail value 1000", got.P99)
+	}
+}
+
 func exactStats(samples []Sample, latency func(Sample) time.Duration) Stats {
 	var st Stats
 	lats := make([]time.Duration, 0, len(samples))
@@ -68,7 +87,7 @@ func exactStats(samples []Sample, latency func(Sample) time.Duration) Stats {
 	}
 	sort.Slice(lats, func(i, j int) bool { return lats[i] < lats[j] })
 	pct := func(p float64) time.Duration {
-		idx := int(p*float64(len(lats))) - 1
+		idx := int(math.Ceil(p*float64(len(lats)))) - 1
 		if idx < 0 {
 			idx = 0
 		}

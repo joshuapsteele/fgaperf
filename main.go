@@ -63,6 +63,16 @@ func validateResumeState(st State, tupleCount, batchSize int) error {
 	return nil
 }
 
+func validateReadyState(st *State) error {
+	if st == nil {
+		return fmt.Errorf("state is missing; run `fgaperf setup` first")
+	}
+	if !st.SeedComplete || st.SeededTuples != st.TupleCount {
+		return fmt.Errorf("state file records an incomplete seed (%d/%d tuples); run `fgaperf setup -resume` to finish it, or `fgaperf cleanup` then `fgaperf setup` fresh", st.SeededTuples, st.TupleCount)
+	}
+	return nil
+}
+
 func validateStateCorpus(st *State, corpus *Corpus) error {
 	if st == nil || corpus == nil {
 		return nil
@@ -443,6 +453,9 @@ func setup(client *FGAClient, a *Analysis, cfg *Config, resume bool) (*State, er
 }
 
 func probe(client *FGAClient, a *Analysis, cfg *Config, st *State) error {
+	if err := validateReadyState(st); err != nil {
+		return err
+	}
 	var corpus *Corpus
 	var err error
 	if cfg.CorpusSource == "replay" {
@@ -496,6 +509,9 @@ func probe(client *FGAClient, a *Analysis, cfg *Config, st *State) error {
 }
 
 func run(client *FGAClient, cfg *Config, st *State) error {
+	if err := validateReadyState(st); err != nil {
+		return err
+	}
 	corpus, err := LoadCorpus(cfg.CorpusFile)
 	if err != nil {
 		return fmt.Errorf("loading corpus (run probe first?): %w", err)

@@ -33,6 +33,7 @@ func fixedReport() *Report {
 		CorpusDistinct: 666,
 		TotalChecks:    300000,
 		Mismatches:     0,
+		VerifyResults:  true,
 		Throughput:     4892,
 		Overall:        st(294000, mssec(3), mssec(2), mssec(5), mssec(6), mssec(8), mssec(40)),
 		Conditioned:    st(118000, mssec(4), mssec(3), mssec(6), mssec(7), mssec(10), mssec(38)),
@@ -181,6 +182,26 @@ func TestMarkdownSummaryAndHealthySuggestions(t *testing.T) {
 	}
 }
 
+func TestMarkdownDoesNotClaimVerificationWhenDisabled(t *testing.T) {
+	r := fixedReport()
+	r.VerifyResults = false
+	r.ResolvedConfig = map[string]any{
+		"load": map[string]any{"verify_results": false},
+	}
+	md := r.Markdown()
+	for _, notWant := range []string{
+		"Verified responses had zero mismatches.",
+		"All verified responses matched probe-time expectations.",
+	} {
+		if strings.Contains(md, notWant) {
+			t.Fatalf("markdown claimed verification success while verification was disabled: %q", notWant)
+		}
+	}
+	if !strings.Contains(md, "Result verification was disabled.") {
+		t.Fatalf("markdown did not explain disabled verification:\n%s", md)
+	}
+}
+
 func TestMarkdownSuggestions(t *testing.T) {
 	r := fixedReport()
 	r.CorpusStats = map[string]CorpusTargetStats{
@@ -230,6 +251,9 @@ func TestSummarizeCounts(t *testing.T) {
 	}
 	if cs.Mean != 4.0 {
 		t.Errorf("mean = %v, want 4.0", cs.Mean)
+	}
+	if cs.P99 != 10 {
+		t.Errorf("p99 = %d, want tail value 10", cs.P99)
 	}
 }
 

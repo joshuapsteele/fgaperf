@@ -83,6 +83,22 @@ func TestBaselineRegressionEvaluation(t *testing.T) {
 		}
 	})
 
+	t.Run("fails when current throughput is zero", func(t *testing.T) {
+		current := sampleReport()
+		current.Throughput = 0
+		current.Overall = Stats{Errors: 100}
+		current.ByTarget["document#viewer"] = Stats{Errors: 50}
+		thresholds, err := parseMaxRegressions("p99=10%,throughput=-5%")
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmp := evaluateBaseline(base, current, thresholds)
+		got := strings.Join(cmp.failureStrings(), "\n")
+		if !strings.Contains(got, "throughput overall") {
+			t.Fatalf("zero-throughput current run did not fail throughput gate; failures=%v warnings=%v", cmp.failureStrings(), cmp.Warnings)
+		}
+	})
+
 	t.Run("config and shape differences are warnings", func(t *testing.T) {
 		current := sampleReport()
 		current.Duration = "30s"
@@ -177,5 +193,10 @@ func TestParseMaxRegressions(t *testing.T) {
 	}
 	if _, err := parseMaxRegressions("unknown=1%"); err == nil {
 		t.Fatal("unknown metric passed")
+	}
+	for _, raw := range []string{"p99=NaN%", "p99=Inf%", "throughput=-Inf%"} {
+		if _, err := parseMaxRegressions(raw); err == nil {
+			t.Fatalf("non-finite threshold %q passed", raw)
+		}
 	}
 }

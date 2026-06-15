@@ -6,6 +6,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -36,6 +37,7 @@ type Report struct {
 	CorpusStats       map[string]CorpusTargetStats `json:"corpus_target_stats,omitempty"`
 	TotalChecks       int64                        `json:"total_checks_incl_warmup"`
 	Mismatches        int64                        `json:"result_mismatches"`
+	VerifyResults     bool                         `json:"verify_results"`
 	Throughput        float64                      `json:"throughput_per_sec"`
 	EndpointMix       []EndpointShare              `json:"endpoint_mix,omitempty"` // mixed-endpoint runs only: the configured endpoint blend
 	Overall           Stats                        `json:"overall"`
@@ -45,7 +47,7 @@ type Report struct {
 	Contextual        Stats                        `json:"contextual"`
 	NoContextual      Stats                        `json:"without_contextual"`
 	ByTarget          map[string]Stats             `json:"by_target"`
-	ByEndpoint        map[string]Stats             `json:"by_endpoint,omitempty"` // mixed-endpoint runs only: per-endpoint latency split
+	ByEndpoint        map[string]Stats             `json:"by_endpoint,omitempty"`          // mixed-endpoint runs only: per-endpoint latency split
 	DSQueriesByTarget map[string]float64           `json:"ds_queries_by_target,omitempty"` // probe-time mean datastore queries per check, per relation; absent unless probe.attribute_ds_queries ran
 	ErrorsByClass     map[string]int64             `json:"errors_by_class,omitempty"`
 	ErrorSamples      []string                     `json:"error_samples,omitempty"`
@@ -165,7 +167,7 @@ func summarizeCounts(samples []Sample) *CountStats {
 	cs.Total = sum
 	cs.Mean = float64(sum) / float64(len(counts))
 	pct := func(p float64) int {
-		idx := int(p*float64(len(counts))) - 1
+		idx := int(math.Ceil(p*float64(len(counts)))) - 1
 		if idx < 0 {
 			idx = 0
 		}
@@ -355,6 +357,7 @@ func BuildReport(res *LoadResult, corpus *Corpus, cfg *Config, tupleCount int, s
 		CorpusStats:    corpus.Stats,
 		TotalChecks:    res.TotalChecks,
 		Mismatches:     res.Mismatches,
+		VerifyResults:  cfg.Load.VerifyResults,
 		ByTarget:       map[string]Stats{},
 		ErrorsByClass:  res.ErrorsByClass,
 		ErrorSamples:   res.ErrorSamples,
@@ -663,7 +666,7 @@ func (r *Report) Markdown() string {
 		}
 		w("")
 	}
-	mismatchNote := mismatchSentence(r.Mismatches)
+	mismatchNote := mismatchSentence(r.verificationEnabled(), r.Mismatches)
 	if r.MismatchFile != "" {
 		mismatchNote += fmt.Sprintf(" The mismatched checks (deduplicated, capped at %d) are listed in `%s`.", maxMismatchRecords, filepath.Base(r.MismatchFile))
 	}
@@ -947,7 +950,11 @@ func (r *Report) Markdown() string {
 	w("")
 	w("**Offered rate vs achieved rate** — offered is what the load generator tried to send (set by `load.rate`). Achieved is what the server actually processed. Achieved < offered means the server fell behind; the gap shows up as dropped rate slots (a tick fired but every worker was still busy) and as rising response-latency p99.")
 	w("")
-	w("**Throughput** — completed requests per second over the measured window. The Mismatches count is responses whose allowed/denied differs from probe-time ground truth — usually cache staleness, sometimes a real bug. The Errors count covers timeouts, 5xx, decode failures, etc.")
+	if r.verificationEnabled() {
+		w("**Throughput** — completed requests per second over the measured window. The Mismatches count is responses whose allowed/denied differs from probe-time ground truth — usually cache staleness, sometimes a real bug. The Errors count covers timeouts, 5xx, decode failures, etc.")
+	} else {
+		w("**Throughput** — completed requests per second over the measured window. Result verification was disabled, so mismatches were not measured. The Errors count covers timeouts, 5xx, decode failures, etc.")
+	}
 	w("")
 	w("**Population slices.** \"All checks\" is every measured Check or BatchCheck. \"CEL-conditioned paths\" are checks whose resolution can evaluate a CEL condition somewhere in the graph (computed statically from the model — fgaperf doesn't trace per request). \"With contextual tuples\" are checks where `contextual.attach_probability` won and the request carried contextual tuples. \"Background tuple writes\" is the churn rate's Write/Delete latency, only present when `load.write_rate > 0`.")
 	w("")
@@ -1010,11 +1017,43 @@ func sloClause(slo string) string {
 	return fmt.Sprintf(" with response-latency p99 under the %s SLO", slo)
 }
 
-func mismatchSentence(n int64) string {
+func mismatchSentence(verified bool, n int64) string {
+	if !verified {
+		return "Result verification was disabled."
+	}
 	if n == 0 {
 		return "All verified responses matched probe-time expectations."
 	}
 	return fmt.Sprintf("%d responses differed from probe-time expectations (investigate cache staleness or consistency settings).", n)
+}
+
+func (r *Report) verificationEnabled() bool {
+	if r == nil {
+		return false
+	}
+	if r.VerifyResults || r.Mismatches > 0 {
+		return true
+	}
+	if v, ok := resolvedBool(r.ResolvedConfig, "load", "verify_results"); ok {
+		return v
+	}
+	return false
+}
+
+func resolvedBool(m map[string]any, path ...string) (bool, bool) {
+	var cur any = m
+	for _, p := range path {
+		mm, ok := cur.(map[string]any)
+		if !ok {
+			return false, false
+		}
+		cur, ok = mm[p]
+		if !ok {
+			return false, false
+		}
+	}
+	v, ok := cur.(bool)
+	return v, ok
 }
 
 func (r *Report) summary() string {
@@ -1032,7 +1071,9 @@ func (r *Report) summary() string {
 	if r.Server != nil && r.Server.DatastoreQueryCount.Count > 0 {
 		parts = append(parts, fmt.Sprintf("OpenFGA reported %.2f datastore queries/request.", r.Server.DatastoreQueryCount.Mean))
 	}
-	if r.Mismatches == 0 {
+	if !r.verificationEnabled() {
+		parts = append(parts, "Result verification was disabled.")
+	} else if r.Mismatches == 0 {
 		parts = append(parts, "Verified responses had zero mismatches.")
 	} else {
 		parts = append(parts, fmt.Sprintf("Verified responses had %d mismatches.", r.Mismatches))

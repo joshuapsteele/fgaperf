@@ -283,6 +283,9 @@ func parseMaxRegressions(raw string) (regressionThresholds, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid max-regression %q: %w", part, err)
 		}
+		if math.IsNaN(pct) || math.IsInf(pct, 0) {
+			return nil, fmt.Errorf("invalid max-regression %q: threshold must be finite", part)
+		}
 		out[metric] = pct
 	}
 	return out, nil
@@ -360,8 +363,8 @@ func evaluateBaseline(b *Baseline, current *Report, thresholds regressionThresho
 
 func (cmp *baselineComparison) checkThroughput(allowedPct float64) {
 	base, current := cmp.Baseline.Throughput, cmp.Current.Throughput
-	if base <= 0 || current <= 0 {
-		cmp.Warnings = append(cmp.Warnings, "throughput regression gate skipped because baseline or current throughput is zero")
+	if base <= 0 {
+		cmp.Warnings = append(cmp.Warnings, "throughput regression gate skipped because baseline throughput is zero")
 		return
 	}
 	pct := allowedPct

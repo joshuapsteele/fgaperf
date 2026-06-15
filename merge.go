@@ -192,6 +192,21 @@ func checkMergeCompatible(pathA string, a *Report, pathB string, b *Report) erro
 			return err
 		}
 	}
+	aCfg := mergeComparableConfig(a)
+	bCfg := mergeComparableConfig(b)
+	if len(aCfg) > 0 || len(bCfg) > 0 {
+		if configFingerprint(aCfg) != configFingerprint(bCfg) {
+			diffs := diffConfigs(aCfg, bCfg)
+			detail := ""
+			if len(diffs) > 0 {
+				if len(diffs) > 3 {
+					diffs = diffs[:3]
+				}
+				detail = ": " + strings.Join(diffs, "; ")
+			}
+			return fmt.Errorf("cannot merge %s with %s: resolved workload config differs%s", pathA, pathB, detail)
+		}
+	}
 	if (a.OfferedRate == 0) != (b.OfferedRate == 0) {
 		return fmt.Errorf("cannot merge %s with %s: closed-loop and fixed-rate reports cannot be combined", pathA, pathB)
 	}
@@ -204,6 +219,51 @@ func checkMergeCompatible(pathA string, a *Report, pathB string, b *Report) erro
 		}
 	}
 	return nil
+}
+
+func mergeComparableConfig(r *Report) map[string]any {
+	if r == nil || len(r.ResolvedConfig) == 0 {
+		return nil
+	}
+	m := cloneConfigMap(r.ResolvedConfig)
+	delete(m, "output_dir")
+	delete(m, "state_file")
+	if load, ok := m["load"].(map[string]any); ok {
+		for _, key := range []string{
+			"client_id",
+			"concurrency",
+			"rate",
+			"write_rate",
+			"sample_file",
+			"report_interval",
+		} {
+			delete(load, key)
+		}
+	}
+	return m
+}
+
+func cloneConfigMap(in map[string]any) map[string]any {
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = cloneConfigValue(v)
+	}
+	return out
+}
+
+func cloneConfigValue(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		return cloneConfigMap(t)
+	case []any:
+		out := make([]any, len(t))
+		for i, v := range t {
+			out[i] = cloneConfigValue(v)
+		}
+		return out
+	default:
+		return t
+	}
 }
 
 // endpointMixKey canonicalizes a report's endpoint blend so two merge inputs
