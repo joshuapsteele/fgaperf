@@ -578,11 +578,12 @@ func ms(d time.Duration) string {
 func (r *Report) Markdown() string {
 	var b strings.Builder
 	w := func(format string, args ...any) { fmt.Fprintf(&b, format+"\n", args...) }
+	transport := transportName(r)
 
 	w("# OpenFGA Performance Test Findings")
 	w("")
-	w("Generated %s by fgaperf %s. All latencies in milliseconds, measured client-side over HTTP against %s.",
-		r.GeneratedAt.Format("2006-01-02 15:04 UTC"), r.ToolVersion, r.APIURL)
+	w("Generated %s by fgaperf %s. All latencies in milliseconds, measured client-side over %s against %s.",
+		r.GeneratedAt.Format("2006-01-02 15:04 UTC"), r.ToolVersion, transport, r.APIURL)
 	w("")
 	if r.Interim {
 		if r.ReportInterval != "" {
@@ -830,7 +831,7 @@ func (r *Report) Markdown() string {
 	if r.Endpoint == "batch-check" {
 		w("## Batch breakdown")
 		w("")
-		w("*Batch-check latency is measured per HTTP batch. The `batch` row can mix several target relations, so use it as a batch population view rather than a per-relation diagnostic.*")
+		w("*Batch-check latency is measured per %s. The `batch` row can mix several target relations, so use it as a batch population view rather than a per-relation diagnostic.*", batchRequestName(r))
 	} else {
 		w("## Per-relation breakdown")
 		w("")
@@ -880,7 +881,7 @@ func (r *Report) Markdown() string {
 	if len(r.ErrorsByClass) > 0 {
 		w("## Errors")
 		w("")
-		w("*Failed requests grouped by class. Timeouts and 5xx point at server- or datastore-side trouble (look at the server-side view, or lower offered rate). 4xx and decode errors point at fgaperf or config (mismatched model, malformed contextual tuples). Connection errors usually mean the server restarted mid-run. The `batch-item` class counts batch-check calls whose HTTP round trip succeeded but that carried at least one item-level error; their service latency is still included in the percentiles above, since the request itself completed.*")
+		w("*Failed requests grouped by class. Timeouts and 5xx point at server- or datastore-side trouble (look at the server-side view, or lower offered rate). 4xx and decode errors point at fgaperf or config (mismatched model, malformed contextual tuples). Connection errors usually mean the server restarted mid-run. The `batch-item` class counts batch-check calls whose %s succeeded but that carried at least one item-level error; their service latency is still included in the percentiles above, since the request itself completed.*", batchItemRequestName(r))
 		w("")
 		w("| Class | Count |")
 		w("|---|---|")
@@ -906,7 +907,7 @@ func (r *Report) Markdown() string {
 		s := r.Server
 		w("## Server-side view")
 		w("")
-		w("*OpenFGA's own metrics for the measured phase. The client-side numbers above include HTTP and JSON overhead; these don't. Use them to separate \"the server is slow\" from \"the network/serialization is slow\", and to size the datastore by datastore queries per request. On a shared OpenFGA deployment, these Prometheus counters may include unrelated traffic unless the server exposes labels you can isolate.*")
+		w("%s", serverSideIntro(r))
 		w("")
 		w("Diffed from OpenFGA's Prometheus metrics between the start and end of the measured phase. Percentiles are estimated from histogram buckets, so they are coarser than the client-side numbers above.")
 		w("")
@@ -928,7 +929,7 @@ func (r *Report) Markdown() string {
 			w("| Check cache hit rate | %.1f%% of %.0f lookups |", 100*s.CheckCacheHits/s.CheckCacheTotal, s.CheckCacheTotal)
 		}
 		w("")
-		w("Datastore queries per request is the capacity currency for OpenFGA sizing: it tells you how much database load each check translates into, independent of network and JSON overhead.")
+		w("%s", datastoreCapacitySentence(r))
 		w("")
 	}
 	if r.SeedRate > 0 {
@@ -970,7 +971,7 @@ func (r *Report) Markdown() string {
 	w("")
 	w("**Saturation knee** — the highest sustained rate. Past it, achieved rate plateaus and response-latency p99 climbs. Useful for capacity planning: the knee, minus headroom, is what you can safely send.")
 	w("")
-	w("**Server-side view.** Diffed from OpenFGA's Prometheus histograms over the measured phase, so percentiles are bucket-estimated and slightly coarser than client-side. \"Datastore queries per request\" is the most portable capacity metric — independent of network and JSON overhead, so you can use it to size the database without identical client placement. On shared servers, confirm the scraped metrics are not mixed with unrelated traffic.")
+	w("%s", howToReadServerSideView(r))
 	w("")
 	w("## Caveats and interpretation")
 	w("")
@@ -979,7 +980,7 @@ func (r *Report) Markdown() string {
 		w("The corpus replays %d distinct checks across %d entries (%.1fx average duplication). Duplication inflates server-side cache hit rates relative to production traffic; if it is high, lower probe.allowed_ratio pressure (or raise probe.samples_per_target) and rerun.", r.CorpusDistinct, r.CorpusSize, dup)
 		w("")
 	}
-	w("Latencies include client-side HTTP and JSON overhead, which is the number a calling service would actually observe. Results depend heavily on the datastore behind OpenFGA, its cache configuration, and co-location of client and server; record those alongside these numbers. The conditioned/unconditioned split is computed statically from the model (whether any tuple on the resolution path can carry a condition), not from per-request traces. Repeat runs with different random_seed values to confirm stability before drawing conclusions.")
+	w("%s", latencyCaveatSentence(r))
 	w("")
 	w("For the measurement pitfalls behind these caveats — closed-loop vs fixed-rate, coordinated omission, warmup and cache fill-in, corpus uniqueness, and why probing and load can legitimately disagree — see the [benchmarking methodology](https://github.com/joshuapsteele/fgaperf/blob/main/docs/methodology.md) page.")
 	return b.String()
@@ -998,6 +999,62 @@ func endpointNoun(endpoint string) string {
 	default:
 		return "checks"
 	}
+}
+
+func transportName(r *Report) string {
+	if r != nil && r.Transport == "grpc" {
+		return "gRPC"
+	}
+	return "HTTP"
+}
+
+func transportOverheadPhrase(r *Report) string {
+	if r != nil && r.Transport == "grpc" {
+		return "gRPC transport overhead"
+	}
+	return "HTTP and JSON overhead"
+}
+
+func batchRequestName(r *Report) string {
+	if r != nil && r.Transport == "grpc" {
+		return "gRPC batch-check request"
+	}
+	return "HTTP batch"
+}
+
+func batchItemRequestName(r *Report) string {
+	if r != nil && r.Transport == "grpc" {
+		return "transport request"
+	}
+	return "HTTP round trip"
+}
+
+func serverSideIntro(r *Report) string {
+	if r != nil && r.Transport == "grpc" {
+		return fmt.Sprintf("*OpenFGA's own metrics for the measured phase. The client-side numbers above include %s; these don't. Use them to separate \"the server is slow\" from \"the client transport path is slow\", and to size the datastore by datastore queries per request. On a shared OpenFGA deployment, these Prometheus counters may include unrelated traffic unless the server exposes labels you can isolate.*", transportOverheadPhrase(r))
+	}
+	return "*OpenFGA's own metrics for the measured phase. The client-side numbers above include HTTP and JSON overhead; these don't. Use them to separate \"the server is slow\" from \"the network/serialization is slow\", and to size the datastore by datastore queries per request. On a shared OpenFGA deployment, these Prometheus counters may include unrelated traffic unless the server exposes labels you can isolate.*"
+}
+
+func datastoreCapacitySentence(r *Report) string {
+	if r != nil && r.Transport == "grpc" {
+		return "Datastore queries per request is the capacity currency for OpenFGA sizing: it tells you how much database load each check translates into, independent of client placement and transport overhead."
+	}
+	return "Datastore queries per request is the capacity currency for OpenFGA sizing: it tells you how much database load each check translates into, independent of network and JSON overhead."
+}
+
+func howToReadServerSideView(r *Report) string {
+	if r != nil && r.Transport == "grpc" {
+		return "**Server-side view.** Diffed from OpenFGA's Prometheus histograms over the measured phase, so percentiles are bucket-estimated and slightly coarser than client-side. \"Datastore queries per request\" is the most portable capacity metric — independent of client placement and transport overhead, so you can use it to size the database without identical client placement. On shared servers, confirm the scraped metrics are not mixed with unrelated traffic."
+	}
+	return "**Server-side view.** Diffed from OpenFGA's Prometheus histograms over the measured phase, so percentiles are bucket-estimated and slightly coarser than client-side. \"Datastore queries per request\" is the most portable capacity metric — independent of network and JSON overhead, so you can use it to size the database without identical client placement. On shared servers, confirm the scraped metrics are not mixed with unrelated traffic."
+}
+
+func latencyCaveatSentence(r *Report) string {
+	if r != nil && r.Transport == "grpc" {
+		return fmt.Sprintf("Latencies include client-side %s, which is the number a calling service would actually observe. Results depend heavily on the datastore behind OpenFGA, its cache configuration, and co-location of client and server; record those alongside these numbers. The conditioned/unconditioned split is computed statically from the model (whether any tuple on the resolution path can carry a condition), not from per-request traces. Repeat runs with different random_seed values to confirm stability before drawing conclusions.", transportOverheadPhrase(r))
+	}
+	return "Latencies include client-side HTTP and JSON overhead, which is the number a calling service would actually observe. Results depend heavily on the datastore behind OpenFGA, its cache configuration, and co-location of client and server; record those alongside these numbers. The conditioned/unconditioned split is computed statically from the model (whether any tuple on the resolution path can carry a condition), not from per-request traces. Repeat runs with different random_seed values to confirm stability before drawing conclusions."
 }
 
 // endpointMixSentence renders the configured blend as "mixed (check 70%,
@@ -1107,7 +1164,7 @@ func (r *Report) suggestions() []string {
 		clientP99 := float64(r.Overall.P99) / float64(time.Millisecond)
 		serverP99 := r.Server.RequestDuration.P99
 		if clientP99 > 5 && clientP99 > 3*serverP99 {
-			out = append(out, fmt.Sprintf("Client p99 (%.2f ms) is much higher than server-side p99 (%.2f ms); check client/server co-location, network latency, and JSON/HTTP overhead.", clientP99, serverP99))
+			out = append(out, fmt.Sprintf("Client p99 (%.2f ms) is much higher than server-side p99 (%.2f ms); check client/server co-location, network latency, and %s.", clientP99, serverP99, transportOverheadPhrase(r)))
 		}
 	}
 	if v, ok := resolvedFloat(r.ResolvedConfig, "probe", "cohort_bias"); ok && v < 0.5 {

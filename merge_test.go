@@ -123,6 +123,38 @@ func TestMergeRejectsDifferentResolvedWorkloadConfig(t *testing.T) {
 	}
 }
 
+func TestMergeRejectsDuplicateClientID(t *testing.T) {
+	dir := t.TempDir()
+	start := time.Now()
+	a := mergeFixtureReport(7, 1, 0, 10, start, []time.Duration{time.Millisecond})
+	b := mergeFixtureReport(7, 1, 0, 10, start, []time.Duration{time.Millisecond})
+	pathA := writeReportFixture(t, dir, "a.json", a)
+	pathB := writeReportFixture(t, dir, "b.json", b)
+
+	if _, err := buildMergedReport([]string{pathA, pathB}, start); err == nil {
+		t.Fatal("reports with duplicate load.client_id merged without error")
+	} else if !strings.Contains(err.Error(), "load.client_id") {
+		t.Fatalf("error did not name load.client_id: %v", err)
+	}
+}
+
+func TestMergeRejectsFixedRateBaseWithoutResponseDigest(t *testing.T) {
+	dir := t.TempDir()
+	start := time.Now()
+	a := mergeFixtureReport(1, 1, 100, 10, start, []time.Duration{time.Millisecond})
+	b := mergeFixtureReport(2, 1, 100, 10, start, []time.Duration{time.Millisecond})
+	a.Digests.Response = nil
+	a.ResponseLatency = nil
+	pathA := writeReportFixture(t, dir, "a.json", a)
+	pathB := writeReportFixture(t, dir, "b.json", b)
+
+	if _, err := buildMergedReport([]string{pathA, pathB}, start); err == nil {
+		t.Fatal("fixed-rate base report without response digest merged without error")
+	} else if !strings.Contains(err.Error(), "response-latency digest") {
+		t.Fatalf("error did not name response digest: %v", err)
+	}
+}
+
 // Two mixed-endpoint reports with the same blend merge into one whose
 // per-endpoint counts are the sum of the inputs; two different blends are
 // rejected.

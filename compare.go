@@ -200,6 +200,20 @@ func deltaCell(a, b time.Duration) string {
 	return fmt.Sprintf("%+.2f ms (%+.1f%%)", d, 100*float64(b-a)/float64(a))
 }
 
+func durationCell(st Stats, d time.Duration) string {
+	if st.Count == 0 {
+		return "—"
+	}
+	return ms(d)
+}
+
+func durationDeltaCell(a Stats, av time.Duration, b Stats, bv time.Duration) string {
+	if a.Count == 0 || b.Count == 0 {
+		return "—"
+	}
+	return deltaCell(av, bv)
+}
+
 type seriesStats struct {
 	N      int
 	Mean   float64
@@ -252,10 +266,25 @@ func targetDurationSeries(set reportSet, target string, value func(Stats) time.D
 	vals := make([]float64, 0, len(set.Reports))
 	for _, r := range set.Reports {
 		if st, ok := r.ByTarget[target]; ok {
+			if st.Count == 0 {
+				continue
+			}
 			vals = append(vals, durationMillis(value(st)))
 		}
 	}
 	return vals
+}
+
+func targetRequestErrorTotals(set reportSet, target string) (requests int, errors int) {
+	for _, r := range set.Reports {
+		st, ok := r.ByTarget[target]
+		if !ok {
+			continue
+		}
+		requests += st.Count + st.Errors
+		errors += st.Errors
+	}
+	return requests, errors
 }
 
 func durationMillis(d time.Duration) float64 {
@@ -273,6 +302,9 @@ func formatSeries(st seriesStats, unit string, precision int) string {
 }
 
 func deltaSeriesCell(a, b seriesStats, unit string, precision int, percent bool) string {
+	if a.N == 0 || b.N == 0 {
+		return "—"
+	}
 	delta := b.Mean - a.Mean
 	out := fmt.Sprintf("%+.*f%s", precision, delta, unit)
 	if percent && a.Mean != 0 {
@@ -282,6 +314,9 @@ func deltaSeriesCell(a, b seriesStats, unit string, precision int, percent bool)
 }
 
 func significanceLabel(a, b seriesStats) string {
+	if a.N == 0 || b.N == 0 {
+		return "—"
+	}
 	if a.N < 2 || b.N < 2 {
 		return "insufficient repeats"
 	}
@@ -501,11 +536,11 @@ func CompareSetMarkdown(aSet, bSet reportSet) string {
 	w("## Per-relation p50 / p99")
 	w("")
 	if repeated {
-		w("| Relation | A p50 | B p50 | Δ p50 | p50 signal | A p99 | B p99 | Δ p99 | p99 signal |")
-		w("|---|---|---|---|---|---|---|---|---|")
+		w("| Relation | A req | A err | B req | B err | A p50 | B p50 | Δ p50 | p50 signal | A p99 | B p99 | Δ p99 | p99 signal |")
+		w("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
 	} else {
-		w("| Relation | A p50 | B p50 | Δ p50 | A p99 | B p99 | Δ p99 |")
-		w("|---|---|---|---|---|---|---|")
+		w("| Relation | A req | A err | B req | B err | A p50 | B p50 | Δ p50 | A p99 | B p99 | Δ p99 |")
+		w("|---|---|---|---|---|---|---|---|---|---|---|")
 	}
 	targets := map[string]bool{}
 	for _, r := range aSet.Reports {
@@ -525,21 +560,16 @@ func CompareSetMarkdown(aSet, bSet reportSet) string {
 	sort.Strings(names)
 	for _, t := range names {
 		if repeated {
+			aReq, aErr := targetRequestErrorTotals(aSet, t)
+			bReq, bErr := targetRequestErrorTotals(bSet, t)
 			aP50 := targetDurationSeries(aSet, t, func(s Stats) time.Duration { return s.P50 })
 			bP50 := targetDurationSeries(bSet, t, func(s Stats) time.Duration { return s.P50 })
 			aP99 := targetDurationSeries(aSet, t, func(s Stats) time.Duration { return s.P99 })
 			bP99 := targetDurationSeries(bSet, t, func(s Stats) time.Duration { return s.P99 })
-			if len(aP50) == 0 || len(bP50) == 0 {
-				side := "B"
-				if len(aP50) > 0 {
-					side = "A"
-				}
-				w("| %s | _only in %s_ | | | | | | | |", t, side)
-				continue
-			}
 			a50, b50 := summarizeSeries(aP50), summarizeSeries(bP50)
 			a99, b99 := summarizeSeries(aP99), summarizeSeries(bP99)
-			w("| %s | %s | %s | %s | %s | %s | %s | %s | %s |", t,
+			w("| %s | %d | %d | %d | %d | %s | %s | %s | %s | %s | %s | %s | %s |", t,
+				aReq, aErr, bReq, bErr,
 				formatSeries(a50, " ms", 2), formatSeries(b50, " ms", 2), deltaSeriesCell(a50, b50, " ms", 2, true), significanceLabel(a50, b50),
 				formatSeries(a99, " ms", 2), formatSeries(b99, " ms", 2), deltaSeriesCell(a99, b99, " ms", 2, true), significanceLabel(a99, b99))
 			continue
@@ -547,12 +577,14 @@ func CompareSetMarkdown(aSet, bSet reportSet) string {
 		as, aok := a.ByTarget[t]
 		bs, bok := b.ByTarget[t]
 		if !aok || !bok {
-			w("| %s | _only in %s_ | | | | | |", t, map[bool]string{true: "A", false: "B"}[aok])
+			side := map[bool]string{true: "A", false: "B"}[aok]
+			w("| %s | _only in %s_ | | | | | | | | | |", t, side)
 			continue
 		}
-		w("| %s | %s | %s | %s | %s | %s | %s |", t,
-			ms(as.P50), ms(bs.P50), deltaCell(as.P50, bs.P50),
-			ms(as.P99), ms(bs.P99), deltaCell(as.P99, bs.P99))
+		w("| %s | %d | %d | %d | %d | %s | %s | %s | %s | %s | %s |", t,
+			as.Count+as.Errors, as.Errors, bs.Count+bs.Errors, bs.Errors,
+			durationCell(as, as.P50), durationCell(bs, bs.P50), durationDeltaCell(as, as.P50, bs, bs.P50),
+			durationCell(as, as.P99), durationCell(bs, bs.P99), durationDeltaCell(as, as.P99, bs, bs.P99))
 	}
 	w("")
 

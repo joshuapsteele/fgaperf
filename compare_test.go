@@ -83,6 +83,22 @@ func TestCompareMarkdownShowsDeltasAndConfigDiff(t *testing.T) {
 	}
 }
 
+func TestCompareDoesNotRenderAllErrorRelationAsZeroLatency(t *testing.T) {
+	a := sampleReport()
+	a.ByTarget["document#viewer"] = Stats{Errors: 5}
+	b := sampleReport()
+	b.ByTarget["document#viewer"] = Stats{Count: 5, Items: 5, P50: 2 * time.Millisecond, P99: 8 * time.Millisecond}
+
+	md := CompareMarkdown("a.json", "b.json", a, b)
+	if strings.Contains(md, "| document#viewer | 0.00 | 2.00") ||
+		strings.Contains(md, "| document#viewer | 0.00 |") {
+		t.Fatalf("all-error relation rendered as zero-latency row:\n%s", md)
+	}
+	if !strings.Contains(md, "| document#viewer | 5 | 5 | 5 | 0 | — | 2.00 | — | — | 8.00 | — |") {
+		t.Fatalf("compare row did not expose errors and absent latency:\n%s", md)
+	}
+}
+
 func TestCompareMarkdownLabelsRepeatedRunSignals(t *testing.T) {
 	makeReport := func(throughput float64, p99 time.Duration) *Report {
 		r := sampleReport()

@@ -138,13 +138,23 @@ openfga:
 		t.Fatal(err)
 	}
 
-	reportData, err := json.Marshal(sampleReport())
+	reportOne := sampleReport()
+	reportOne.ClientID = 1
+	reportOne.ResolvedConfig["load"].(map[string]any)["client_id"] = 1
+	reportData, err := json.Marshal(reportOne)
 	if err != nil {
 		t.Fatal(err)
 	}
 	reportA := filepath.Join(dir, "a.json")
 	reportB := filepath.Join(dir, "b.json")
 	if err := os.WriteFile(reportA, reportData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reportTwo := sampleReport()
+	reportTwo.ClientID = 2
+	reportTwo.ResolvedConfig["load"].(map[string]any)["client_id"] = 2
+	reportData, err = json.Marshal(reportTwo)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(reportB, reportData, 0o644); err != nil {

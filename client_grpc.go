@@ -15,6 +15,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"time"
@@ -51,7 +52,7 @@ func grpcAddr(cfg OpenFGAConfig) string {
 	if u, err := url.Parse(cfg.APIURL); err == nil && u.Hostname() != "" {
 		host = u.Hostname()
 	}
-	return host + ":8081"
+	return net.JoinHostPort(host, "8081")
 }
 
 func NewGRPCClient(cfg OpenFGAConfig) (*GRPCClient, error) {

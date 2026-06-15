@@ -204,6 +204,7 @@ func TestGRPCAddrDefault(t *testing.T) {
 	}{
 		{"explicit grpc_url wins", OpenFGAConfig{GRPCURL: "fga.example:9090", APIURL: "http://localhost:8080"}, "fga.example:9090"},
 		{"derive host from api_url", OpenFGAConfig{APIURL: "http://openfga.internal:8080"}, "openfga.internal:8081"},
+		{"derive bracketed ipv6 from api_url", OpenFGAConfig{APIURL: "http://[::1]:8080"}, "[::1]:8081"},
 		{"localhost default", OpenFGAConfig{APIURL: "http://localhost:8080"}, "localhost:8081"},
 		{"empty api_url falls back to localhost", OpenFGAConfig{}, "localhost:8081"},
 	}

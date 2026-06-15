@@ -45,7 +45,13 @@ func buildMergedReport(paths []string, generatedAt time.Time) (*Report, error) {
 		if r.Digests == nil || r.Digests.Overall.IsZero() {
 			return nil, fmt.Errorf("%s does not contain mergeable digests; rerun with this fgaperf version", path)
 		}
+		if r.OfferedRate > 0 && (r.Digests.Response == nil || r.Digests.Response.IsZero()) {
+			return nil, fmt.Errorf("%s is fixed-rate but lacks a response-latency digest", path)
+		}
 		reports = append(reports, r)
+	}
+	if err := checkMergeClientIDs(paths, reports); err != nil {
+		return nil, err
 	}
 	base := reports[0]
 	for i := 1; i < len(reports); i++ {
@@ -163,6 +169,17 @@ func buildMergedReport(paths []string, generatedAt time.Time) (*Report, error) {
 		}
 	}
 	return merged, nil
+}
+
+func checkMergeClientIDs(paths []string, reports []*Report) error {
+	seen := map[int]string{}
+	for i, r := range reports {
+		if first, ok := seen[r.ClientID]; ok {
+			return fmt.Errorf("cannot merge %s with %s: duplicate load.client_id %d", first, paths[i], r.ClientID)
+		}
+		seen[r.ClientID] = paths[i]
+	}
+	return nil
 }
 
 func checkMergeCompatible(pathA string, a *Report, pathB string, b *Report) error {

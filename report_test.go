@@ -202,6 +202,35 @@ func TestMarkdownDoesNotClaimVerificationWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestMarkdownNamesGRPCTransport(t *testing.T) {
+	r := fixedReport()
+	r.Transport = "grpc"
+	r.ErrorsByClass = nil
+	r.ErrorSamples = nil
+	md := r.Markdown()
+	for _, want := range []string{
+		"measured client-side over gRPC",
+		"| Transport | gRPC |",
+		"gRPC transport overhead",
+	} {
+		if !strings.Contains(md, want) {
+			t.Fatalf("gRPC markdown missing %q:\n%s", want, md)
+		}
+	}
+	for _, notWant := range []string{
+		"measured client-side over HTTP",
+		"HTTP batch",
+		"HTTP round trip",
+		"HTTP and JSON overhead",
+		"network and JSON overhead",
+		"JSON/HTTP overhead",
+	} {
+		if strings.Contains(md, notWant) {
+			t.Fatalf("gRPC markdown still contains HTTP/JSON wording %q", notWant)
+		}
+	}
+}
+
 func TestMarkdownSuggestions(t *testing.T) {
 	r := fixedReport()
 	r.CorpusStats = map[string]CorpusTargetStats{
