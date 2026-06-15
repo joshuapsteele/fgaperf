@@ -5,14 +5,11 @@
 /.fgaperf-state.json
 
 # local model and config (private; the public repo ships examples/ instead)
-/main-model.json
-/config.yaml
-/models/
-/tests/
+/*model.json
+/*config.yaml
 
 .DS_Store
 .claude/
 CLAUDE.md
 AGENTS.md
-BUG_AUDIT.md
-BUG_REPORT.md
+BUG*.md
