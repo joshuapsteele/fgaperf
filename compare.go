@@ -119,6 +119,10 @@ func comparabilityCaveats(a, b *Report) []string {
 	var out []string
 	if a.Endpoint != b.Endpoint {
 		out = append(out, fmt.Sprintf("endpoint differs (%s vs %s); the populations are not comparable", a.Endpoint, b.Endpoint))
+	} else if endpointMixKey(a) != endpointMixKey(b) {
+		// Same label ("mixed") but a different blend: the per-endpoint mix and the
+		// blended headline are not comparable even though the labels match.
+		out = append(out, fmt.Sprintf("endpoint blend differs (%s vs %s); the endpoint mix is not comparable", endpointMixSentence(a.EndpointMix), endpointMixSentence(b.EndpointMix)))
 	}
 	if a.CorpusSize != b.CorpusSize {
 		out = append(out, fmt.Sprintf("corpus size differs (%d vs %d entries); per-relation populations may not line up", a.CorpusSize, b.CorpusSize))

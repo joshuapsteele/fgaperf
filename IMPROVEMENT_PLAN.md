@@ -483,7 +483,9 @@ that only surfaces when more than one endpoint ran. The report adds
 matching mergeable digest sketches, rendered as a "Per-endpoint breakdown"
 section in Markdown and HTML and a `mixed (check 70%, ...)` config-table row;
 headline throughput reads as blended "requests/sec". `fgaperf merge` sums the
-per-endpoint counts and rejects inputs with different blends. When the run is
+per-endpoint counts and rejects inputs with different blends, and `fgaperf
+compare` flags a differing blend as a comparability caveat (two `mixed` reports
+share a label, so the plain endpoint check can't catch it). When the run is
 single-endpoint, every new field is omitted and the results JSON, findings
 Markdown (golden unchanged), and sample file are byte-identical. The `-endpoint`
 flag still sets a single endpoint; the blend is config-only. Verification:
@@ -492,7 +494,8 @@ parse + resolved round-trip, validation of bad names/weights/duplicates, the
 weighted picker's share + single-endpoint no-draw determinism, an httptest mixed
 run asserting all endpoints exercised at their shares with per-endpoint stats +
 digest round-trip, and single-endpoint omission; `merge_test.go`: two same-blend
-reports merge with summed per-endpoint counts and different blends are rejected);
+reports merge with summed per-endpoint counts and different blends are rejected;
+`compare_test.go`: a differing blend is flagged while an identical one is not);
 end-to-end against the local compose stack — a 60/25/15 check/list-objects/
 batch-check blend exercised all three at their configured shares (achieved
 60.2%/24.4%/15.5%), 0 errors, with the per-endpoint breakdown in the Markdown

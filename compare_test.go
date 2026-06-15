@@ -163,6 +163,40 @@ func TestCompareMarkdownCaveatsIncomparableRuns(t *testing.T) {
 	}
 }
 
+// Two mixed-endpoint runs share the "mixed" label, so the plain endpoint check
+// can't tell them apart; a differing blend must still be flagged as a
+// comparability caveat, while an identical blend must not.
+func TestCompareCaveatsDifferingEndpointBlend(t *testing.T) {
+	a := sampleReport()
+	a.Endpoint = "mixed"
+	a.EndpointMix = []EndpointShare{{"check", 70, 70}, {"list-objects", 30, 30}}
+	b := sampleReport()
+	b.Endpoint = "mixed"
+	b.EndpointMix = []EndpointShare{{"check", 50, 50}, {"list-objects", 50, 50}}
+
+	caveats := comparabilityCaveats(a, b)
+	found := false
+	for _, c := range caveats {
+		if strings.Contains(c, "endpoint blend differs") {
+			found = true
+		}
+		if strings.Contains(c, "endpoint differs") {
+			t.Errorf("same label should not trigger the plain endpoint caveat: %q", c)
+		}
+	}
+	if !found {
+		t.Errorf("differing endpoint blend was not flagged: %v", caveats)
+	}
+
+	// An identical blend must not be flagged.
+	b.EndpointMix = []EndpointShare{{"check", 70, 70}, {"list-objects", 30, 30}}
+	for _, c := range comparabilityCaveats(a, b) {
+		if strings.Contains(c, "endpoint") {
+			t.Errorf("identical blend should not be flagged: %q", c)
+		}
+	}
+}
+
 func TestCompareArtifactsDoNotOverwriteSameTimestamp(t *testing.T) {
 	dir := t.TempDir()
 	reportA := filepath.Join(dir, "a.json")
