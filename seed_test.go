@@ -22,10 +22,18 @@ func exampleWorld(t *testing.T) (*World, []TupleKey) {
 }
 
 func TestGenerateTuplesDeterministic(t *testing.T) {
-	_, first := exampleWorld(t)
-	_, second := exampleWorld(t)
+	a := loadExampleModel(t)
+	cfg, err := LoadConfigFile("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.RandomSeed != 0 {
+		t.Fatalf("default random_seed = %d, want documented deterministic zero", cfg.RandomSeed)
+	}
+	first := NewWorld(a, cfg).GenerateTuples()
+	second := NewWorld(a, cfg).GenerateTuples()
 	if !reflect.DeepEqual(first, second) {
-		t.Fatal("same seed produced different tuple graphs")
+		t.Fatal("default random_seed produced different tuple graphs")
 	}
 }
 

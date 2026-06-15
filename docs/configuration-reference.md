@@ -30,7 +30,7 @@ naming the bad key.
 | `corpus_file` | `corpus.json` | Where `probe` writes its corpus and `run` reads it from. |
 | `corpus_source` | `probe` | How `probe` builds the corpus. `probe` synthesizes candidates from the model (the default path). `replay` instead reads a real check log from `replay.file` (see the [`replay`](#replay--corpus-from-a-real-check-log) section). |
 | `output_dir` | `results` | Where final `results-<stamp>.json`, `findings-<stamp>.md`, `report-<stamp>.html`, and (if any) `mismatches-<stamp>.json` are written. |
-| `random_seed` | `0` (time-based) | Fixed seed makes generation, probing, and request ordering reproducible. Same seed + same config = same run. |
+| `random_seed` | `0` | Seed for generation, probing, and request ordering. `0` uses deterministic built-in seed streams; any explicit value, including `0`, is reproducible. Same seed + same config = same run. |
 | `keep_store` | `false` | When `true`, `fgaperf all` does not delete the store at the end. Useful when iterating on probe/run without re-seeding. |
 
 ## `openfga` — server connection
